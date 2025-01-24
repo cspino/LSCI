@@ -15,11 +15,36 @@ import cv2
 import time
 import tempfile
 import h5py
+import threading
+import queue
 
 import skvideo
 from thorlabs_tsi_sdk.tl_camera import TLCameraSDK, OPERATION_MODE
 
 from utils import calculate_contrast_from_sums, temporal_contrast
+
+frame_queue = queue.Queue(maxsize=100)
+stop_flag = False
+
+def writer_thread(output_file:Path, dimensions:tuple):
+    with h5py.File(output_file.as_posix(), 'w') as h5file:
+        dataset = h5file.create_dataset(
+            "frames",
+            shape=(0, dimensions[0], dimensions[1]),
+            maxshape=(None, dimensions[0], dimensions[1]),
+            dtype=np.float32
+        )
+        frame_count = 0
+        while not stop_flag or not frame_queue.empty():
+            try:
+                frame = frame_queue.get(timeout=1)
+                dataset.resize((frame_count+1, dimensions[0], dimensions[1]))
+                dataset[frame_count] = frame
+                frame_count +=1
+                frame_queue.task_done()
+            except queue.Empty:
+                pass
+
 
 
 if __name__=="__main__":
@@ -87,87 +112,92 @@ if __name__=="__main__":
             sum_s2 = 0
             with tempfile.TemporaryDirectory() as tmp:
                 hdf5_raw_path = Path(tmp)/ 'tmp_raw_frames.h5'
-                with h5py.File(hdf5_raw_path, 'w') as h5_raw_file:
-                    raw_dataset = h5_raw_file.create_dataset( #TODO we could create another dataset for processed frames
-                        'raw_frames',
-                        shape=(0, camera.image_height_pixels, camera.image_width_pixels),
-                        maxshape=(None, camera.image_height_pixels, camera.image_width_pixels),
-                        dtype=np.float32)
+                dimensions = (camera.image_height_pixels, camera.image_width_pixels)
+                thread = threading.Thread(target=writer_thread, args=(hdf5_raw_path, dimensions))
+                thread.start()
+                # with h5py.File(hdf5_raw_path, 'w') as h5_raw_file:
+                #     raw_dataset = h5_raw_file.create_dataset( #TODO we could create another dataset for processed frames
+                #         'raw_frames',
+                #         shape=(0, camera.image_height_pixels, camera.image_width_pixels),
+                #         maxshape=(None, camera.image_height_pixels, camera.image_width_pixels),
+                #         dtype=np.float32)
 
-                    try:
-                        frame_count=0
-                        while True:
-                            start_time = time.time()
-                            frame = camera.get_pending_frame_or_null()
-                            if frame is not None:
-                                #print("frame #{} received!".format(frame.frame_count))
-                                image_buffer_copy = np.copy(frame.image_buffer).astype(np.float32) #TODO see if astype is necessary
-                                numpy_shaped_image = image_buffer_copy.reshape(camera.image_height_pixels, camera.image_width_pixels)
+                try:
+                    frame_count=0
+                    while True:
+                        start_time = time.time()
+                        frame = camera.get_pending_frame_or_null()
+                        if frame is not None:
+                            #print("frame #{} received!".format(frame.frame_count))
+                            image_buffer_copy = np.copy(frame.image_buffer).astype(np.float32) #TODO see if astype is necessary
+                            numpy_shaped_image = image_buffer_copy.reshape(camera.image_height_pixels, camera.image_width_pixels)
 
-                                if not stack is None:
-                                    stack = np.concatenate((stack, numpy_shaped_image[np.newaxis,:,:]), axis=0) # changed this so that the frames are stacked along axis 0
-                                else:
-                                    stack = numpy_shaped_image[np.newaxis,:,:]
-                                
-                                if stack.shape[0] < args.window_size:
-                                    # only start processing once we have as many frames as the window size
-                                    # but start calculating the sum
-                                    new_frame = stack[-1]
-                                    sum_s += new_frame
-                                    sum_s2 += new_frame**2
-                                    old_frame = stack[0]
-                                    continue
-
-                                # Our stack should always be as long as the window size
-                                assert stack.shape[0] == args.window_size
-
-                                # PROCESS IMAGE
-                                # start_time = time.time()
-
-                                new_frame = stack[-1]
-                                sum_s += new_frame - old_frame # pylint: disable=used-before-assignment
-                                sum_s2 += new_frame**2 - old_frame**2
-
-                                contrast_frame = calculate_contrast_from_sums(sum_s, sum_s2, args.window_size)
-                                contrast_frame = contrast_frame/2
-                                #print("min: {}, max: {}".format(contrast_frame.min(), contrast_frame.max()))
-
-                                frame_to_display = cv2.cvtColor(contrast_frame, cv2.COLOR_GRAY2BGR) # Grayscale
-                                #frame_to_display = cv2.applyColorMap(contrast_frame, cv2.COLORMAP_BONE) # Colormap
-
-                                if not baseline_contrast is None:
-                                    # subtract baseline if provided
-                                    frame_to_display = frame_to_display - baseline_contrast
-
-                                frame_to_display = (frame_to_display*255).astype(np.uint8)
-                                #print("min: {}, max: {}".format(frame_to_display.min(), frame_to_display.max()))
-                                cv2.imshow("Image From TSI Cam", new_frame/np.max(new_frame))
-                                cv2.waitKey(1)
-
-                                # Save all processed frames to numpy array if we want to save as video
-                                if args.output_path:
-                                    continue
-                                if args.output_path_raw:
-                                    save_start_time = time.time()
-                                    raw_dataset.resize((frame_count+1, camera.image_height_pixels, camera.image_width_pixels))
-                                    raw_frame = stack[int(args.window_size/2)]
-                                    print('raw frame type: ', raw_frame.dtype)
-                                    print('raw frame range: ', np.min(raw_frame),' -- ', np.max(raw_frame))
-                                    raw_dataset[frame_count] = raw_frame
-                                    frame_count+=1
-                                    print('saving time: ', time.time()-save_start_time)
-
-                                stack = np.delete(stack, 0, axis=0) # remove the first frame from stack (we're only keeping the current window)
-                                i += 1
-                                old_frame = stack[0] # defined for next loop
-                                print("time elapsed: ", time.time()-start_time)
-
+                            if not stack is None:
+                                stack = np.concatenate((stack, numpy_shaped_image[np.newaxis,:,:]), axis=0) # changed this so that the frames are stacked along axis 0
                             else:
-                                print("Unable to acquire image, program exiting...")
-                                exit()
+                                stack = numpy_shaped_image[np.newaxis,:,:]
+                            
+                            if stack.shape[0] < args.window_size:
+                                # only start processing once we have as many frames as the window size
+                                # but start calculating the sum
+                                new_frame = stack[-1]
+                                sum_s += new_frame
+                                sum_s2 += new_frame**2
+                                old_frame = stack[0]
+                                continue
 
-                    except KeyboardInterrupt:
-                        print("loop terminated")
+                            # Our stack should always be as long as the window size
+                            assert stack.shape[0] == args.window_size
+
+                            # PROCESS IMAGE
+                            # start_time = time.time()
+
+                            new_frame = stack[-1]
+                            sum_s += new_frame - old_frame # pylint: disable=used-before-assignment
+                            sum_s2 += new_frame**2 - old_frame**2
+
+                            contrast_frame = calculate_contrast_from_sums(sum_s, sum_s2, args.window_size)
+                            contrast_frame = contrast_frame/2
+                            #print("min: {}, max: {}".format(contrast_frame.min(), contrast_frame.max()))
+
+                            frame_to_display = cv2.cvtColor(contrast_frame, cv2.COLOR_GRAY2BGR) # Grayscale
+                            #frame_to_display = cv2.applyColorMap(contrast_frame, cv2.COLORMAP_BONE) # Colormap
+
+                            if not baseline_contrast is None:
+                                # subtract baseline if provided
+                                frame_to_display = frame_to_display - baseline_contrast
+
+                            frame_to_display = (frame_to_display*255).astype(np.uint8)
+                            #print("min: {}, max: {}".format(frame_to_display.min(), frame_to_display.max()))
+                            cv2.imshow("Image From TSI Cam", new_frame/np.max(new_frame))
+                            cv2.waitKey(1)
+
+                            # Save all processed frames to numpy array if we want to save as video
+                            # if args.output_path:
+                            #     continue
+                            if args.output_path_raw:
+                                raw_frame = stack[int(args.window_size/2)]
+                                try:
+                                    frame_queue.put_nowait(raw_frame)
+                                except queue.Full:
+                                    print("Frame dropped from save due to full queue")
+
+                            stack = np.delete(stack, 0, axis=0) # remove the first frame from stack (we're only keeping the current window)
+                            i += 1
+                            old_frame = stack[0] # defined for next loop
+                            print("time elapsed: ", time.time()-start_time)
+
+                        else:
+                            print("Unable to acquire image, program exiting...")
+                            exit()
+
+                except KeyboardInterrupt:
+                    print('path exists: ', hdf5_raw_path.exists())
+                    print("loop terminated. Waiting for saving thread to finish")
+                    stop_flag=True
+                    thread.join()
+                    print('path exists: ', hdf5_raw_path.exists())
+
 
                 # if args.output_path:
                 # ## Save video
@@ -189,11 +219,12 @@ if __name__=="__main__":
 
                 if args.output_path_raw:
                 ## Save video
-                    print("Saving raw video")
+                    print("Saving raw frames")
                     os.makedirs(args.output_path_raw, exist_ok=True)
+                    print('path exists: ', hdf5_raw_path.exists())
 
                     with h5py.File(hdf5_raw_path, 'r') as h5file:
-                        full_sequence_raw = h5file['raw_frames'][:]
+                        full_sequence_raw = h5file['frames'][:]
 
                     print('sequence shape: ', full_sequence_raw.shape)
                     print('min: ', np.min(full_sequence_raw))
@@ -202,7 +233,7 @@ if __name__=="__main__":
 
                     for i in range(full_sequence_raw.shape[0]):
                         frame = full_sequence_raw[i]
-                        cv2.imwrite((args.output_path_raw/f'frame{i:04d}.png').as_posix(),frame)
+                        cv2.imwrite((args.output_path_raw/f'frame{i:04d}.png').as_posix(), frame)
 
             cv2.destroyAllWindows()
             camera.disarm()
