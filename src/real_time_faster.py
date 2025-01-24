@@ -13,6 +13,8 @@ import numpy as np
 import os
 import cv2
 import time
+import tempfile
+import h5py
 
 import skvideo
 from thorlabs_tsi_sdk.tl_camera import TLCameraSDK, OPERATION_MODE
@@ -83,130 +85,126 @@ if __name__=="__main__":
             i=0
             sum_s = 0
             sum_s2 = 0
+            with tempfile.TemporaryDirectory() as tmp:
+                hdf5_raw_path = Path(tmp)/ 'tmp_raw_frames.h5'
+                with h5py.File(hdf5_raw_path, 'w') as h5_raw_file:
+                    raw_dataset = h5_raw_file.create_dataset( #TODO we could create another dataset for processed frames
+                        'raw_frames',
+                        shape=(0, camera.image_height_pixels, camera.image_width_pixels),
+                        maxshape=(None, camera.image_height_pixels, camera.image_width_pixels),
+                        dtype=np.float32)
 
-            full_sequence = None # used if we save the video
-            full_sequence_raw = None # used if we save the raw video
+                    try:
+                        frame_count=0
+                        while True:
+                            start_time = time.time()
+                            frame = camera.get_pending_frame_or_null()
+                            if frame is not None:
+                                #print("frame #{} received!".format(frame.frame_count))
+                                image_buffer_copy = np.copy(frame.image_buffer).astype(np.float32) #TODO see if astype is necessary
+                                numpy_shaped_image = image_buffer_copy.reshape(camera.image_height_pixels, camera.image_width_pixels)
 
-            try:
-                while True:
-                    start_time = time.time()
-                    frame = camera.get_pending_frame_or_null()
-                    if frame is not None:
-                        #print("frame #{} received!".format(frame.frame_count))
-                        image_buffer_copy = np.copy(frame.image_buffer).astype(np.float32) #TODO see if astype is necessary
-                        numpy_shaped_image = image_buffer_copy.reshape(camera.image_height_pixels, camera.image_width_pixels)
+                                if not stack is None:
+                                    stack = np.concatenate((stack, numpy_shaped_image[np.newaxis,:,:]), axis=0) # changed this so that the frames are stacked along axis 0
+                                else:
+                                    stack = numpy_shaped_image[np.newaxis,:,:]
+                                
+                                if stack.shape[0] < args.window_size:
+                                    # only start processing once we have as many frames as the window size
+                                    # but start calculating the sum
+                                    new_frame = stack[-1]
+                                    sum_s += new_frame
+                                    sum_s2 += new_frame**2
+                                    old_frame = stack[0]
+                                    continue
 
-                        if not stack is None:
-                            stack = np.concatenate((stack, numpy_shaped_image[np.newaxis,:,:]), axis=0) # changed this so that the frames are stacked along axis 0
-                        else:
-                            stack = numpy_shaped_image[np.newaxis,:,:]
-                        
-                        if stack.shape[0] < args.window_size:
-                            # only start processing once we have as many frames as the window size
-                            # but start calculating the sum
-                            new_frame = stack[-1]
-                            sum_s += new_frame
-                            sum_s2 += new_frame**2
-                            old_frame = stack[0]
-                            continue
+                                # Our stack should always be as long as the window size
+                                assert stack.shape[0] == args.window_size
 
-                        # Our stack should always be as long as the window size
-                        assert stack.shape[0] == args.window_size
+                                # PROCESS IMAGE
+                                # start_time = time.time()
 
-                        # PROCESS IMAGE
-                        start_time = time.time()
+                                new_frame = stack[-1]
+                                sum_s += new_frame - old_frame # pylint: disable=used-before-assignment
+                                sum_s2 += new_frame**2 - old_frame**2
 
-                        new_frame = stack[-1]
-                        sum_s += new_frame - old_frame # pylint: disable=used-before-assignment
-                        sum_s2 += new_frame**2 - old_frame**2
+                                contrast_frame = calculate_contrast_from_sums(sum_s, sum_s2, args.window_size)
+                                contrast_frame = contrast_frame/2
+                                #print("min: {}, max: {}".format(contrast_frame.min(), contrast_frame.max()))
 
-                        contrast_frame = calculate_contrast_from_sums(sum_s, sum_s2, args.window_size)
-                        contrast_frame = contrast_frame/2
-                        #print("min: {}, max: {}".format(contrast_frame.min(), contrast_frame.max()))
+                                frame_to_display = cv2.cvtColor(contrast_frame, cv2.COLOR_GRAY2BGR) # Grayscale
+                                #frame_to_display = cv2.applyColorMap(contrast_frame, cv2.COLORMAP_BONE) # Colormap
 
-                        frame_to_display = cv2.cvtColor(contrast_frame, cv2.COLOR_GRAY2BGR) # Grayscale
-                        #frame_to_display = cv2.applyColorMap(contrast_frame, cv2.COLORMAP_BONE) # Colormap
+                                if not baseline_contrast is None:
+                                    # subtract baseline if provided
+                                    frame_to_display = frame_to_display - baseline_contrast
 
-                        if not baseline_contrast is None:
-                            # subtract baseline if provided
-                            frame_to_display = frame_to_display - baseline_contrast
+                                frame_to_display = (frame_to_display*255).astype(np.uint8)
+                                #print("min: {}, max: {}".format(frame_to_display.min(), frame_to_display.max()))
+                                cv2.imshow("Image From TSI Cam", new_frame/np.max(new_frame))
+                                cv2.waitKey(1)
 
-                        frame_to_display = (frame_to_display*255).astype(np.uint8)
-                        #print("min: {}, max: {}".format(frame_to_display.min(), frame_to_display.max()))
-                        cv2.imshow("Image From TSI Cam", frame_to_display)
-                        cv2.waitKey(1)
+                                # Save all processed frames to numpy array if we want to save as video
+                                if args.output_path:
+                                    continue
+                                if args.output_path_raw:
+                                    save_start_time = time.time()
+                                    raw_dataset.resize((frame_count+1, camera.image_height_pixels, camera.image_width_pixels))
+                                    raw_frame = stack[int(args.window_size/2)]
+                                    print('raw frame type: ', raw_frame.dtype)
+                                    print('raw frame range: ', np.min(raw_frame),' -- ', np.max(raw_frame))
+                                    raw_dataset[frame_count] = raw_frame
+                                    frame_count+=1
+                                    print('saving time: ', time.time()-save_start_time)
 
-                        # Save all processed frames to numpy array if we want to save as video
-                        if args.output_path:
-                            if not full_sequence is None:
-                                full_sequence = np.concatenate((full_sequence, frame_to_display[np.newaxis,:,:]), axis=0)
+                                stack = np.delete(stack, 0, axis=0) # remove the first frame from stack (we're only keeping the current window)
+                                i += 1
+                                old_frame = stack[0] # defined for next loop
+                                print("time elapsed: ", time.time()-start_time)
+
                             else:
-                                full_sequence = frame_to_display[np.newaxis,:,:]
-                        if args.output_path_raw:
-                            if not full_sequence_raw is None:
-                                raw_to_save = frame_to_display = cv2.cvtColor(stack[int(args.window_size/2)], cv2.COLOR_GRAY2BGR)
-                                full_sequence_raw = np.concatenate((full_sequence_raw, raw_to_save[np.newaxis,:,:]), axis=0)
-                            else:
-                                raw_to_save = frame_to_display = cv2.cvtColor(stack[int(args.window_size/2)], cv2.COLOR_GRAY2BGR)
-                                full_sequence_raw = raw_to_save[np.newaxis,:,:]
+                                print("Unable to acquire image, program exiting...")
+                                exit()
 
-                        stack = np.delete(stack, 0, axis=0) # remove the first frame from stack (we're only keeping the current window)
-                        i += 1
-                        old_frame = stack[0] # defined for next loop
+                    except KeyboardInterrupt:
+                        print("loop terminated")
 
-                    else:
-                        print("Unable to acquire image, program exiting...")
-                        exit()
+                # if args.output_path:
+                # ## Save video
+                #     print("Saving processed video")
+                #     print(full_sequence.dtype)
+                #     print(full_sequence.shape)
+                #     os.makedirs(args.output_path.parent, exist_ok=True)
 
-            except KeyboardInterrupt:
-                print("loop terminated")
+                #     # VideoWriter setup
+                #     fps = 10  # frames per second
+                #     frame_size = (1920, 1080)
+                #     fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Codec for AVI format
+                #     out = cv2.VideoWriter(args.output_path, fourcc, fps, frame_size)
 
-            if args.output_path:
-            ## Save video
-                print("Saving processed video")
-                print(full_sequence.dtype)
-                print(full_sequence.shape)
-                os.makedirs(args.output_path.parent, exist_ok=True)
+                #     for i in range(full_sequence.shape[0]):
+                #         out.write(full_sequence[i])
 
-                # VideoWriter setup
-                fps = 10  # frames per second
-                frame_size = (1920, 1080)
-                fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Codec for AVI format
-                out = cv2.VideoWriter(args.output_path, fourcc, fps, frame_size)
+                #     out.release()
 
-                for i in range(full_sequence.shape[0]):
-                    out.write(full_sequence[i])
+                if args.output_path_raw:
+                ## Save video
+                    print("Saving raw video")
+                    os.makedirs(args.output_path_raw, exist_ok=True)
 
-                out.release()
+                    with h5py.File(hdf5_raw_path, 'r') as h5file:
+                        full_sequence_raw = h5file['raw_frames'][:]
 
-            if args.output_path_raw:
-            ## Save video
-                print("Saving raw video")
-                print(full_sequence_raw.dtype)
-                print(full_sequence_raw.shape)
+                    print('sequence shape: ', full_sequence_raw.shape)
+                    print('min: ', np.min(full_sequence_raw))
+                    print('max: ', np.max(full_sequence_raw))
+                    full_sequence_raw=full_sequence_raw/full_sequence_raw.max()*255
 
-                full_sequence_raw=full_sequence_raw/full_sequence_raw.max()*255
-                #full_sequence_raw=full_sequence_raw.astype(np.uint16)
-
-                os.makedirs(args.output_path_raw, exist_ok=True)
-
-                #VideoWriter setup
-                # fps = 10  # frames per second
-                # frame_size = (1920, 1080)
-                # fourcc = cv2.VideoWriter_fourcc(*'FFV1')  # Codec for AVI format
-                # out = cv2.VideoWriter(args.output_path_raw, fourcc, fps, frame_size)
-
-                # for i in range(full_sequence_raw.shape[0]):
-                #     out.write(full_sequence_raw[i])
-
-                # out.release()
-                for i in range(full_sequence_raw.shape[0]):
-                     frame = full_sequence_raw[i]
-                     cv2.imwrite((args.output_path_raw/f'frame{i:04d}.png').as_posix(),frame)
+                    for i in range(full_sequence_raw.shape[0]):
+                        frame = full_sequence_raw[i]
+                        cv2.imwrite((args.output_path_raw/f'frame{i:04d}.png').as_posix(),frame)
 
             cv2.destroyAllWindows()
             camera.disarm()
-
-    #  Because we are using the 'with' statement context-manager, disposal has been taken care of.
 
     print("program completed")
