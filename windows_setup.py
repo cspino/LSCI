@@ -19,8 +19,9 @@ import sys
 
 
 def configure_path():
+    print("HERE")
     is_64bits = sys.maxsize > 2**32
-    relative_path_to_dlls = '.' + os.sep + 'dlls' + os.sep
+    relative_path_to_dlls = '.' + os.sep + '.' + os.sep + 'dlls' + os.sep
 
     if is_64bits:
         relative_path_to_dlls += '64_lib'
@@ -30,6 +31,7 @@ def configure_path():
     absolute_path_to_file_directory = os.path.dirname(os.path.abspath(__file__))
 
     absolute_path_to_dlls = os.path.abspath(absolute_path_to_file_directory + os.sep + relative_path_to_dlls)
+    print("Path to dlls: ", absolute_path_to_dlls)
 
     os.environ['PATH'] = absolute_path_to_dlls + os.pathsep + os.environ['PATH']
 
