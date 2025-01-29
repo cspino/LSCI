@@ -1,8 +1,31 @@
 """
 Utils for LSCI video processing
 """
-
+from typing import Tuple
 import numpy as np
+
+def update_sums(sum_s: np.ndarray,
+                sum_s2:np.ndarray,
+                new_frame: np.ndarray,
+                old_frame:np.ndarray)->Tuple[np.ndarray, np.ndarray]:
+    """
+    Updates the sum and squared sum with the given new and old frames
+
+    Parameters
+    ------------
+    sum_s: np.ndarray
+        Current sum over the window
+    sum_s2: np.ndarray
+        Current sum of squares over the window
+    new_frame: np.ndarray
+        Newly added frame
+    old_frame: np.ndarray
+        Newly removed frame
+    """
+    sum_s += new_frame - old_frame 
+    sum_s2 += new_frame**2 - old_frame**2
+
+    return sum_s, sum_s2
 
 def calculate_contrast_from_sums(sum_s:np.ndarray, sum_s2:np.ndarray, window:int)->np.ndarray:
     """
@@ -24,7 +47,7 @@ def calculate_contrast_from_sums(sum_s:np.ndarray, sum_s2:np.ndarray, window:int
     """
     mean = sum_s/window
     var = (sum_s2/window) - (mean**2)
-    return np.sqrt(var)/np.clip(mean, 1e-25, None)
+    return np.sqrt(var)/np.clip(mean, 1e-15, None)
 
 
 def temporal_contrast(raw_video:np.ndarray, window_size:int, baseline:np.ndarray=None)->np.ndarray:

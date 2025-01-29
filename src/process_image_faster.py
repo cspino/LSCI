@@ -52,11 +52,13 @@ if __name__=="__main__":
 
     # Get info on original video
     og_name = args.video.stem
-    cap = cv2.VideoCapture(args.video)
-    frame_rate = cap.get(cv2.CAP_PROP_FPS)
+    print(args.video.as_posix())
+    cap = cv2.VideoCapture(args.video.as_posix())
+    frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
     print("FRAME RATE: ", frame_rate)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print('dims: ', width, height)
     cap.release()
 
     # Process video
@@ -74,14 +76,14 @@ if __name__=="__main__":
         filename = og_name+f"_processed_{args.suffix}.avi"
     else:
         filename = og_name+"_processed.avi"
-    video_writer = cv2.VideoWriter(args.output_dir/filename, fourcc, frame_rate, (width, height))
+    video_writer = cv2.VideoWriter((args.output_dir/filename).as_posix(), fourcc, frame_rate, (width, height))
 
     for i in range(num_frames):
         frame = t_lsci[i]
 
         # Convert grayscale to BGR by repeating channels
-        # frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) # Grayscale
-        frame = cv2.applyColorMap(frame, cv2.COLORMAP_BONE) # Colormap
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) # Grayscale
+        # frame = cv2.applyColorMap(frame, cv2.COLORMAP_BONE) # Colormap
         video_writer.write(frame)
 
         if args.show:
