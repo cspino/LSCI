@@ -1,7 +1,11 @@
 """
 Utils for LSCI video processing
 """
+import os
+from pathlib import Path
 from typing import Tuple
+from natsort import natsorted
+from PIL import Image
 import numpy as np
 
 def update_sums(sum_s: np.ndarray,
@@ -47,10 +51,12 @@ def calculate_contrast_from_sums(sum_s:np.ndarray, sum_s2:np.ndarray, window:int
     """
     mean = sum_s/window
     var = (sum_s2/window) - (mean**2)
+    var = np.clip(var, 0, None)
+    # print('variance: ', var)
     return np.sqrt(var)/np.clip(mean, 1e-15, None)
 
 
-def temporal_contrast(raw_video:np.ndarray, window_size:int, baseline:np.ndarray=None)->np.ndarray:
+def temporal_contrast(raw_video:np.ndarray, window_size:int, baseline:np.ndarray=None)->Tuple[np.ndarray, int]:
     """
     Calculate the temporal contrast for a given video
 
@@ -63,15 +69,19 @@ def temporal_contrast(raw_video:np.ndarray, window_size:int, baseline:np.ndarray
     n_processed_frames = stack_size-window_size+1
 
     # create array for lsci images that will be calculated
-    processed_frames = np.zeros([n_processed_frames, width, height])
+    processed_frames = np.zeros([n_processed_frames, width, height], dtype=np.float32)
 
     for i in range(n_processed_frames):
         frames_window = raw_video[i:i+window_size, :, :]
+        print('frames window max: ', np.max(frames_window))
 
         if i==0:
         # for first frame
             sum_window = np.sum(frames_window, axis=0)
             sum_squares_window = np.sum(frames_window ** 2, axis=0)
+
+            # print('sum window max: ', np.max(sum_window))
+            # print('sum squares max: ', np.max(sum_squares_window))
 
             # current_mean = np.mean(frames_window, axis=0)
             # current_variance = np.var(frames_window, axis=0)
@@ -81,18 +91,33 @@ def temporal_contrast(raw_video:np.ndarray, window_size:int, baseline:np.ndarray
             new_frame = frames_window[-1]
             sum_window += new_frame - old_frame
             sum_squares_window += new_frame**2 - old_frame**2
+            # print('sum window max: ', np.max(sum_window))
+            # print('sum squares max: ', np.max(sum_squares_window))
             # current_mean = update_mean(current_mean, new_frame, old_frame, window_size)
             # current_variance = update_variance(current_variance, current_mean, new_frame, old_frame, window_size)
 
         # calculate contrast and add to array
         contrast = calculate_contrast_from_sums(sum_window, sum_squares_window, window_size)
+        print('contrast max: ', np.max(contrast))
 
         if baseline is None:
             processed_frames[i, :, :] = contrast
         else:
             processed_frames[i, :, :] = contrast - baseline
+
+        print('processed frames max: ', processed_frames.max())
         
 
         old_frame = frames_window[0]
 
     return processed_frames, n_processed_frames
+
+
+def read_folder_of_frames(folder_path:Path)->np.ndarray:
+    filenames = os.listdir(folder_path)
+    filenames = natsorted(filenames)
+    images = [np.array(Image.open(folder_path/file), dtype=np.float32) for file in filenames if os.path.isfile(folder_path/file)]
+
+    
+    stacked_images = np.stack(images, axis=0)
+    return stacked_images

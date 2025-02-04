@@ -51,7 +51,7 @@ def save_frames_hdf5(output_file:Path, dimensions:tuple, frame_queue:queue.Queue
                 frame_queue.task_done()
             except queue.Empty:
                 pass
-            print('Saving time: ', time.time()-start_time)
+            # print('Saving time: ', time.time()-start_time)
         print('Save thread stopping...')
 
 def save_frames(output_file:Path, dimensions:tuple, frame_queue:queue.Queue, stop:threading.Event):
@@ -64,7 +64,7 @@ def save_frames(output_file:Path, dimensions:tuple, frame_queue:queue.Queue, sto
                 frame_queue.task_done()
             except queue.Empty:
                 pass
-            print('Saving time: ', time.time()-start_time)
+            # print('Saving time: ', time.time()-start_time)
         print('Save thread stopping...')
 
 def capture_frames(queue_raw_save:queue.Queue, queue_raw_display:deque, stop:threading.Event):
@@ -96,7 +96,7 @@ def capture_frames(queue_raw_save:queue.Queue, queue_raw_display:deque, stop:thr
             while not stop.is_set():
                 frame = camera.get_pending_frame_or_null()
                 if frame is not None:
-                    print('frame number: ', frame.frame_count)
+                    # print('frame number: ', frame.frame_count)
                     frame = np.copy(frame.image_buffer).astype(np.float32)
                     # Send raw frame to queue
                     try:
@@ -132,16 +132,18 @@ if __name__=="__main__":
                         default = 10,
                         type = int,
                         help = 'Temporal window size. 10 by default')
-    
-    parser.add_argument('-r', '--output_dir_raw',
-                        default = False,
-                        type = Path,
-                        help = 'If provided, raw video will be saved to specified path')
     parser.add_argument('-o', '--output_dir',
-                        default = False,
+                        default = None,
                         type = Path,
-                        help = 'If provided, processed video will be saved to specified path. '
-                        'For now, output_dir_raw must also be provided to be able to post-process.')
+                        help = 'Directory where raw and processed videos will be saved.')
+    parser.add_argument('-nr', '--no-raw',
+                        dest = "raw",
+                        action = "store_false",
+                        help = 'Use this tag to disable saving of the raw video.')
+    parser.add_argument('-nk', '--no-k',
+                        dest = "process",
+                        action = "store_false",
+                        help = 'Use this tag to disable processing into speckle contrast.')
 
 
     args = parser.parse_args()
@@ -151,10 +153,10 @@ if __name__=="__main__":
     stop_event = threading.Event()
 
     with tempfile.TemporaryDirectory() as tmp:
-        hdf5_raw_path = Path(tmp)/ 'tmp_raw_frames.raw'
+        binary_path = Path(tmp)/ 'tmp_raw_frames.raw'
 
         capture_thread = threading.Thread(target=capture_frames, args=(raw_frame_queue_saving, raw_frame_queue_display, stop_event))
-        save_thread_raw = threading.Thread(target=save_frames, args=(hdf5_raw_path, (1080,1920), raw_frame_queue_saving, stop_event))
+        save_thread_raw = threading.Thread(target=save_frames, args=(binary_path, (1080,1920), raw_frame_queue_saving, stop_event))
         display_thread = threading.Thread(target=display_frames, args=(raw_frame_queue_display, stop_event))
 
         capture_thread.start()
@@ -164,56 +166,58 @@ if __name__=="__main__":
         try:
             while not stop_event.is_set():
                 time.sleep(1)
+                # We wait for the stop signal
 
         except KeyboardInterrupt:
-            print("Stopping...")
+            print("Stopping program...")
             stop_event.set()
         
+        # Wait for all threads to finish
         save_thread_raw.join()
         display_thread.join()
         capture_thread.join()
 
-        if args.output_dir_raw:
-            data = np.fromfile(hdf5_raw_path, dtype=np.float32)
+        if args.raw:
+            # Read the whole sequence from the binary file and save as pngs as well as avi
+            data = np.fromfile(binary_path, dtype=np.float32)
             num_frames = data.size // (1080*1920)
             full_sequence_raw = data.reshape((num_frames, 1080, 1920))
 
-        # ## Save video
+            # Save video
             print("Saving raw frames")
-            os.makedirs(args.output_dir_raw, exist_ok=True)
+            os.makedirs(args.output_dir/'raw_frames', exist_ok=True)
 
-            # with h5py.File(hdf5_raw_path, 'r') as h5file:
-            #     full_sequence_raw = h5file['frames'][:]
-
-            print('sequence shape: ', full_sequence_raw.shape)
-            print('dtype: ', full_sequence_raw.dtype)
-            print('min: ', np.min(full_sequence_raw))
-            print('max: ', np.max(full_sequence_raw))
-            full_sequence_raw=full_sequence_raw/full_sequence_raw.max()*255 #TODO this isn't ideal
+            # print('sequence shape: ', full_sequence_raw.shape)
+            # print('dtype: ', full_sequence_raw.dtype)
+            # print('min: ', np.min(full_sequence_raw))
+            # print('max: ', np.max(full_sequence_raw))
+            full_sequence_raw=(full_sequence_raw/full_sequence_raw.max())*255 #TODO this isn't ideal
 
             fps = 30  # frames per second #TODO change this
             frame_size = (1920, 1080) # CAREFUL! THIS NEEDS TO  BE INVERTED!!
             # print('frame_size: ', frame_size)
             fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Codec for AVI format
-            out = cv2.VideoWriter((args.output_dir_raw/f'raw.avi').as_posix(), fourcc, fps, frame_size, False) #TODO change this filename
+            out = cv2.VideoWriter((args.output_dir/f'raw.avi').as_posix(), fourcc, fps, frame_size, False)
 
-            # print('raw range: ', np.min(full_sequence_raw), ' -- ', np.max(full_sequence_raw))
+            # full_sequence_raw = cv2.cvtColor(full_sequence_raw, cv2.COLOR_GRAY2BGR)
+            print('raw range when saving: ', np.min(full_sequence_raw), ' -- ', np.max(full_sequence_raw))
+            # print('dtype ----- ', full_sequence_raw.dtype)
+
             for i in range(full_sequence_raw.shape[0]):
                 frame = full_sequence_raw[i]
                 # Save as png
-                cv2.imwrite((args.output_dir_raw/f'frame{i:04d}.png').as_posix(), frame)
+                cv2.imwrite((args.output_dir/'raw_frames'/f'frame{i:04d}.png').as_posix(), frame)
+                # print('dtype ----- ', frame.dtype)
                 # Save as avi
                 frame = frame.astype(np.uint8)
-                # frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
                 out.write(frame)
             out.release()
 
-            if args.output_dir:
-                command = ['python', 'process_image_faster.py',
-                           '-v', (args.output_dir_raw/f'raw.avi').as_posix(),
-                           '-o', args.output_dir.as_posix(),
-                           '-w', str(args.window_size),
-                           '--show']
-                subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    print("program completed")
+        if args.process:
+            command = ['python', 'temporal_contrast.py',
+                        '-v', (args.output_dir/'raw_frames').as_posix(),
+                        # '-v', binary_path.as_posix(),
+                        '-o', args.output_dir.as_posix(),
+                        '-w', str(args.window_size),
+                        '--show']
+            subprocess.run(command, shell=True)

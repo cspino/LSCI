@@ -6,9 +6,10 @@ from pathlib import Path
 import time
 import cv2
 import skvideo.io
+# from skimage.exposure import equalize_adapthist
 import numpy as np
 
-from utils import temporal_contrast
+from utils import temporal_contrast, read_folder_of_frames
 
 
 if __name__=="__main__":
@@ -52,31 +53,65 @@ if __name__=="__main__":
 
     # Get info on original video
     og_name = args.video.stem
-    print(args.video.as_posix())
-    cap = cv2.VideoCapture(args.video.as_posix())
-    frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
-    print("FRAME RATE: ", frame_rate)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print('dims: ', width, height)
-    cap.release()
 
     # Process video
     print("Starting processing...")
-    raw_speckle_img_seq = skvideo.io.vread(args.video.as_posix())[:,:,:,1]
-    print(raw_speckle_img_seq.shape)
+    # If video is a folder of frames
+    if args.video.is_dir():
+        print("video is a directory")
+        frame_rate = 30 # TODO change this
+        raw_speckle_img_seq = read_folder_of_frames(args.video)[:,:,:]
+        width = raw_speckle_img_seq.shape[2]
+        height = raw_speckle_img_seq.shape[1]
+
+    elif args.video.suffix == ".raw":
+        height = 1080 # TODO these could be read from a params file?
+        width = 1920
+        frame_rate = 30
+        data = np.fromfile(args.video, dtype=np.float32)
+        num_frames = data.size // (width*height)
+        raw_speckle_img_seq = data.reshape((num_frames, height, width))
+
+    else:
+        # Get info on video
+        cap = cv2.VideoCapture(args.video.as_posix())
+        frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
+        print("FRAME RATE: ", frame_rate)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+
+        raw_speckle_img_seq = skvideo.io.vread(args.video.as_posix())[:,:,:,1]
+
+    print("stack shape: ", raw_speckle_img_seq.shape)
+    print("stack dtype: ", raw_speckle_img_seq.dtype)
+    print("stack range: ")
+    print(" min: ", raw_speckle_img_seq.min())
+    print(" max: ", raw_speckle_img_seq.max())
     t_lsci, num_frames = temporal_contrast(raw_speckle_img_seq, args.window_size, baseline_contrast)
-    t_lsci = (t_lsci*255).astype(np.uint8)
+    print(" K min: ", t_lsci.min())
+    print(" K max: ", t_lsci.max())
+    print(" K shape: ", t_lsci.shape)
+    print(" K dtype: ", t_lsci.dtype)
+    clip_value = 0.5*t_lsci.max()
+    t_lsci = np.clip(t_lsci, 0, clip_value)
+    # t_lsci = (t_lsci*255).astype(np.uint8)
+    t_lsci = (t_lsci*255/t_lsci.max()).astype(np.uint8)
 
     # save processed video
     print("Processing done. Now saving...")
-    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
 
     if args.suffix:
         filename = og_name+f"_processed_{args.suffix}.avi"
     else:
         filename = og_name+"_processed.avi"
+    print("file path: ", args.output_dir/filename)
     video_writer = cv2.VideoWriter((args.output_dir/filename).as_posix(), fourcc, frame_rate, (width, height))
+
+    print("t_lsci range: ")
+    print(" min: ", t_lsci.min())
+    print(" max: ", t_lsci.max())
 
     for i in range(num_frames):
         frame = t_lsci[i]
@@ -84,7 +119,9 @@ if __name__=="__main__":
         # Convert grayscale to BGR by repeating channels
         frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) # Grayscale
         # frame = cv2.applyColorMap(frame, cv2.COLORMAP_BONE) # Colormap
-        video_writer.write(frame)
+        vidout=cv2.resize(frame,(width,height))
+        # print(f"Writing frame {i + 1}: shape={frame.shape}, dtype={frame.dtype}")
+        video_writer.write(vidout)
 
         if args.show:
             cv2.imshow('Frame', frame)

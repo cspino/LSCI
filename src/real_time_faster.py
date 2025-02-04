@@ -1,12 +1,9 @@
 """
-Polling Example
-
-This example shows how to open a camera, adjust some settings, and poll for images. It also shows how 'with' statements
-can be used to automatically clean up camera and SDK resources.
+Real-time temporal contrast calculation and display with options to save raw and/or processed frames
 
 """
 import sys
-sys.path.append('..')
+sys.path.append('..') # this is to be able to import files in project folder
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 import numpy as np
@@ -17,16 +14,28 @@ import tempfile
 import h5py
 import threading
 import queue
-
+from collections import deque
 import skvideo
+
 from thorlabs_tsi_sdk.tl_camera import TLCameraSDK, OPERATION_MODE
+from thorlabs_tsi_sdk.tl_camera_enums import DATA_RATE
+from utils import calculate_contrast_from_sums, temporal_contrast, update_sums
 
-from utils import calculate_contrast_from_sums, temporal_contrast
-
-frame_queue = queue.Queue(maxsize=100)
+raw_frame_queue = queue.Queue(maxsize=100)
+k_frame_queue = queue.Queue(maxsize=100)
 stop_flag = False
 
-def writer_thread(output_file:Path, dimensions:tuple):
+def writer_thread(output_file:Path, dimensions:tuple, frame_queue:queue.Queue):
+    """
+    Writes frames from frame_queue to given output_file path
+
+    Parameters
+    -----------
+    output_file: Path
+        Path to hdf5 file where frames will be saved
+    dimensions: tuple
+        Dimensions of each frame: (height, width)
+    """
     with h5py.File(output_file.as_posix(), 'w') as h5file:
         dataset = h5file.create_dataset(
             "frames",
@@ -46,11 +55,10 @@ def writer_thread(output_file:Path, dimensions:tuple):
                 pass
 
 
-
 if __name__=="__main__":
     parser = ArgumentParser(
     prog = 'process_image',
-    description = 'Get temporal contrast image from raw video',
+    description = 'Get temporal contrast image from thorcam video feed',
     formatter_class = ArgumentDefaultsHelpFormatter)
     parser.add_argument('-w', '--window_size',
                         default = 10,
@@ -84,158 +92,190 @@ if __name__=="__main__":
     try:
         # if on Windows, use the provided setup script to add the DLLs folder to the PATH
         from windows_setup import configure_path
-        print("Calling config path")
         configure_path()
     except ImportError:
-        print("ERROR")
         configure_path = None
-
 
     with TLCameraSDK() as sdk:
         available_cameras = sdk.discover_available_cameras()
         if len(available_cameras) < 1:
             print("no cameras detected")
-
-        with sdk.open_camera(available_cameras[0]) as camera:
-            camera.exposure_time_us = 10000  # set exposure to 10 ms
-            camera.frames_per_trigger_zero_for_unlimited = 0  # start camera in continuous mode
-            camera.image_poll_timeout_ms = 1000  # 1 second polling timeout
-            #camera.frame_rate_control_value = 10
-            #camera.is_frame_rate_control_enabled = True
-
-            camera.arm(2)
-            camera.issue_software_trigger()
-
-            stack = None
-            i=0
+        else:
+            stack = deque(maxlen=args.window_size)
             sum_s = 0
             sum_s2 = 0
-            with tempfile.TemporaryDirectory() as tmp:
-                hdf5_raw_path = Path(tmp)/ 'tmp_raw_frames.h5'
+            
+            with sdk.open_camera(available_cameras[0]) as camera:
+                # Get camera ready for acquisition
+                # print('data rate: ', camera.data_rate) # Currently set to 30 fps  (other option is 50 fps)
+                camera.exposure_time_us = 10000  # set exposure to 10 ms #TODO this should eventually be a parameter
+                camera.frames_per_trigger_zero_for_unlimited = 0  # start camera in continuous mode
+                camera.image_poll_timeout_ms = 1000  # 1 second polling timeout
+                # print('exposure time: ', camera.exposure_time_us)
                 dimensions = (camera.image_height_pixels, camera.image_width_pixels)
-                thread = threading.Thread(target=writer_thread, args=(hdf5_raw_path, dimensions))
-                thread.start()
-                # with h5py.File(hdf5_raw_path, 'w') as h5_raw_file:
-                #     raw_dataset = h5_raw_file.create_dataset( #TODO we could create another dataset for processed frames
-                #         'raw_frames',
-                #         shape=(0, camera.image_height_pixels, camera.image_width_pixels),
-                #         maxshape=(None, camera.image_height_pixels, camera.image_width_pixels),
-                #         dtype=np.float32)
 
-                try:
-                    frame_count=0
-                    while True:
-                        start_time = time.time()
-                        frame = camera.get_pending_frame_or_null()
-                        if frame is not None:
-                            #print("frame #{} received!".format(frame.frame_count))
-                            image_buffer_copy = np.copy(frame.image_buffer).astype(np.float32) #TODO see if astype is necessary
-                            numpy_shaped_image = image_buffer_copy.reshape(camera.image_height_pixels, camera.image_width_pixels)
+                camera.arm(2)
+                camera.issue_software_trigger()
 
-                            if not stack is None:
-                                stack = np.concatenate((stack, numpy_shaped_image[np.newaxis,:,:]), axis=0) # changed this so that the frames are stacked along axis 0
-                            else:
-                                stack = numpy_shaped_image[np.newaxis,:,:]
-                            
-                            if stack.shape[0] < args.window_size:
-                                # only start processing once we have as many frames as the window size
-                                # but start calculating the sum
+                with tempfile.TemporaryDirectory() as tmp:
+                    hdf5_raw_path = Path(tmp)/ 'tmp_raw_frames.h5'
+                    hdf5_k_path = Path(tmp)/ 'tmp_k_frames.h5'
+
+                    raw_write_thread = threading.Thread(target=writer_thread, args=(hdf5_raw_path, dimensions, raw_frame_queue))
+                    k_write_thread = threading.Thread(target=writer_thread, args=(hdf5_k_path, dimensions, k_frame_queue))
+
+                    raw_write_thread.start()
+                    k_write_thread.start()
+
+                    try:
+                        while True:
+                            start_time = time.time()
+                            frame = camera.get_pending_frame_or_null()
+                            print('frame number: ', frame.frame_count)
+                            if frame is not None:
+                                stack.append(np.copy(frame.image_buffer).astype(np.float32))
+
+                                # print('checkpoint 1: ', time.time()-start_time)
+                                
+                                if len(stack) < args.window_size:
+                                    # only start processing once we have as many frames as the window size
+                                    # but start calculating the sum
+                                    new_frame = stack[-1]
+                                    sum_s += new_frame
+                                    sum_s2 += new_frame**2
+                                    old_frame = stack[0]
+                                    continue
+
+                                # Our stack should always be as long as the window size
+                                assert len(stack) == args.window_size
+
+                                # PROCESS IMAGE
+                                processing_start = time.time()
+
                                 new_frame = stack[-1]
-                                sum_s += new_frame
-                                sum_s2 += new_frame**2
-                                old_frame = stack[0]
-                                continue
+                                sum_s, sum_s2 = update_sums(sum_s, sum_s2, new_frame, old_frame)
 
-                            # Our stack should always be as long as the window size
-                            assert stack.shape[0] == args.window_size
+                                contrast_start = time.time()
+                                contrast_frame = calculate_contrast_from_sums(sum_s, sum_s2, args.window_size)
+                                contrast_frame = contrast_frame/2 # TODO this shouldn't be here... see what to do about range
 
-                            # PROCESS IMAGE
-                            # start_time = time.time()
+                                # print('checkpoint 1.5: ', time.time()-contrast_start)
+                                #print("min: {}, max: {}".format(contrast_frame.min(), contrast_frame.max()))
 
-                            new_frame = stack[-1]
-                            sum_s += new_frame - old_frame # pylint: disable=used-before-assignment
-                            sum_s2 += new_frame**2 - old_frame**2
+                                display_prep_start = time.time()
+                                frame_to_display = cv2.cvtColor(contrast_frame, cv2.COLOR_GRAY2BGR) # Repeats image over 3 channels
 
-                            contrast_frame = calculate_contrast_from_sums(sum_s, sum_s2, args.window_size)
-                            contrast_frame = contrast_frame/2
-                            #print("min: {}, max: {}".format(contrast_frame.min(), contrast_frame.max()))
+                                # frame_to_display = cv2.applyColorMap(contrast_frame, cv2.COLORMAP_BONE) # Colormap
 
-                            frame_to_display = cv2.cvtColor(contrast_frame, cv2.COLOR_GRAY2BGR) # Grayscale
-                            #frame_to_display = cv2.applyColorMap(contrast_frame, cv2.COLORMAP_BONE) # Colormap
+                                if not baseline_contrast is None:
+                                    # subtract baseline if provided
+                                    frame_to_display = frame_to_display - baseline_contrast
 
-                            if not baseline_contrast is None:
-                                # subtract baseline if provided
-                                frame_to_display = frame_to_display - baseline_contrast
+                                # frame_to_display = (frame_to_display*255).astype(np.uint8)
+                                # print('display prep time: ', time.time()-display_prep_start)
 
-                            frame_to_display = (frame_to_display*255).astype(np.uint8)
-                            #print("min: {}, max: {}".format(frame_to_display.min(), frame_to_display.max()))
-                            cv2.imshow("Image From TSI Cam", new_frame/np.max(new_frame))
-                            cv2.waitKey(1)
+                                # print('checkpoint 2: ', time.time()-processing_start)
+                                show_start = time.time()
 
-                            # Save all processed frames to numpy array if we want to save as video
-                            # if args.output_path:
-                            #     continue
-                            if args.output_path_raw:
+                                #print("min: {}, max: {}".format(frame_to_display.min(), frame_to_display.max()))
                                 raw_frame = stack[int(args.window_size/2)]
-                                try:
-                                    frame_queue.put_nowait(raw_frame)
-                                except queue.Full:
-                                    print("Frame dropped from save due to full queue")
+                                raw_frame = raw_frame * (255/np.max(raw_frame))
+                                raw_frame = cv2.cvtColor(raw_frame, cv2.COLOR_GRAY2BGR).astype(np.uint8)
+                                # print('raw frame min: ', np.min(raw_frame))
+                                # print('raw frame max: ', np.max(raw_frame))
+                                # print('raw frame shape: ', raw_frame.shape)
 
-                            stack = np.delete(stack, 0, axis=0) # remove the first frame from stack (we're only keeping the current window)
-                            i += 1
-                            old_frame = stack[0] # defined for next loop
-                            print("time elapsed: ", time.time()-start_time)
+                                cv2.imshow("Image From TSI Cam", raw_frame)
+                                cv2.waitKey(1) # Continuous feed
+                                # print('checkpoint 3: ', time.time()-show_start)
 
-                        else:
-                            print("Unable to acquire image, program exiting...")
-                            exit()
+                                # Save all processed frames to numpy array if we want to save as video
+                                # if args.output_path:
+                                #     continue
+                                save_start = time.time()
+                                if args.output_path_raw:
+                                    raw_frame = stack[int(args.window_size/2)]
+                                    try:
+                                        raw_frame_queue.put_nowait(raw_frame)
+                                    except queue.Full:
+                                        print("Frame dropped from save due to full queue")
+                                if args.output_path:
+                                    try:
+                                        k_frame_queue.put_nowait(contrast_frame)
+                                    except queue.Full:
+                                        print("Frame dropped from save due to full queue")
+                                # print('checkpoint 4: ', time.time()-save_start)
 
-                except KeyboardInterrupt:
-                    print('path exists: ', hdf5_raw_path.exists())
-                    print("loop terminated. Waiting for saving thread to finish")
-                    stop_flag=True
-                    thread.join()
-                    print('path exists: ', hdf5_raw_path.exists())
+                                old_frame = stack[0] # defined for next loop
+                                # print("time elapsed: ", time.time()-start_time)
+
+                            else:
+                                print("Unable to acquire image, program exiting...")
+                                exit()
+
+                    except KeyboardInterrupt:
+                        print("loop terminated. Waiting for saving thread to finish")
+                        stop_flag=True
+                        raw_write_thread.join()
+                        k_write_thread.join()
 
 
-                # if args.output_path:
-                # ## Save video
-                #     print("Saving processed video")
-                #     print(full_sequence.dtype)
-                #     print(full_sequence.shape)
-                #     os.makedirs(args.output_path.parent, exist_ok=True)
+                    if args.output_path:
+                    ## Save video
+                        print("Saving processed video")
+                        os.makedirs(args.output_path.parent, exist_ok=True)
 
-                #     # VideoWriter setup
-                #     fps = 10  # frames per second
-                #     frame_size = (1920, 1080)
-                #     fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Codec for AVI format
-                #     out = cv2.VideoWriter(args.output_path, fourcc, fps, frame_size)
+                        with h5py.File(hdf5_k_path, 'r') as h5file:
+                            full_sequence_k = h5file['frames'][:]
 
-                #     for i in range(full_sequence.shape[0]):
-                #         out.write(full_sequence[i])
+                        # VideoWriter setup
+                        fps = 30  # frames per second #TODO change this
+                        frame_size = (camera._local_image_width_pixels, camera.image_height_pixels)
+                        fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Codec for AVI format
+                        out = cv2.VideoWriter(args.output_path.as_posix(), fourcc, fps, frame_size)
+                        
+                        full_sequence_k = full_sequence_k * (255/np.max(full_sequence_k)) # TODO unsure if this is the best method
+                        for i in range(full_sequence_k.shape[0]):
+                            
+                            frame = full_sequence_k[i].astype(np.uint8)
+                            # print('after range: ', np.min(frame), ' -- ', np.max(frame))
+                            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                            out.write(frame)
 
-                #     out.release()
+                        out.release()
 
-                if args.output_path_raw:
-                ## Save video
-                    print("Saving raw frames")
-                    os.makedirs(args.output_path_raw, exist_ok=True)
-                    print('path exists: ', hdf5_raw_path.exists())
+                    if args.output_path_raw:
+                    ## Save video
+                        print("Saving raw frames")
+                        os.makedirs(args.output_path_raw, exist_ok=True)
 
-                    with h5py.File(hdf5_raw_path, 'r') as h5file:
-                        full_sequence_raw = h5file['frames'][:]
+                        with h5py.File(hdf5_raw_path, 'r') as h5file:
+                            full_sequence_raw = h5file['frames'][:]
+                        
+                        print('sequence shape: ', full_sequence_raw.shape)
+                        print('dtype: ', full_sequence_raw.dtype)
+                        print('min: ', np.min(full_sequence_raw))
+                        print('max: ', np.max(full_sequence_raw))
+                        full_sequence_raw=full_sequence_raw/full_sequence_raw.max()*255 #TODO this isn't ideal
 
-                    print('sequence shape: ', full_sequence_raw.shape)
-                    print('min: ', np.min(full_sequence_raw))
-                    print('max: ', np.max(full_sequence_raw))
-                    full_sequence_raw=full_sequence_raw/full_sequence_raw.max()*255
+                        fps = 30  # frames per second #TODO change this
+                        frame_size = (camera._local_image_width_pixels, camera.image_height_pixels)
+                        # print('frame_size: ', frame_size)
+                        fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Codec for AVI format
+                        out = cv2.VideoWriter((args.output_path_raw/f'raw.avi').as_posix(), fourcc, fps, frame_size) #TODO change this filename
 
-                    for i in range(full_sequence_raw.shape[0]):
-                        frame = full_sequence_raw[i]
-                        cv2.imwrite((args.output_path_raw/f'frame{i:04d}.png').as_posix(), frame)
+                        # print('raw range: ', np.min(full_sequence_raw), ' -- ', np.max(full_sequence_raw))
+                        for i in range(full_sequence_raw.shape[0]):
+                            frame = full_sequence_raw[i]
+                            # Save as png
+                            cv2.imwrite((args.output_path_raw/f'frame{i:04d}.png').as_posix(), frame)
+                            # Save as avi
+                            frame = frame.astype(np.uint8)
+                            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                            out.write(frame)
+                        out.release()
 
-            cv2.destroyAllWindows()
-            camera.disarm()
+                cv2.destroyAllWindows()
+                camera.disarm()
 
     print("program completed")
