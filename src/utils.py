@@ -7,6 +7,9 @@ from typing import Tuple
 from natsort import natsorted
 from PIL import Image
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from scipy.ndimage import gaussian_filter1d
 
 def update_sums(sum_s: np.ndarray,
                 sum_s2:np.ndarray,
@@ -121,3 +124,38 @@ def read_folder_of_frames(folder_path:Path)->np.ndarray:
     
     stacked_images = np.stack(images, axis=0)
     return stacked_images
+
+
+def plot_and_save_profile(vid1:np.ndarray,
+                          label1:str,
+                          vid2:np.ndarray,
+                          label2:str,
+                          fps:int,
+                          out_path:Path):
+    # Setup
+    writer = animation.writers['ffmpeg']
+    writer = writer(fps=fps)
+
+    print('vid1 shape: ', vid1.shape)
+    print('vid2 shape: ', vid2.shape)
+
+    middle_line_values1 = vid1[:,:, vid1.shape[2]//2]
+    middle_line_values2 = vid2[:,:, vid2.shape[2]//2]
+
+    nb_frames = max(vid1.shape[0], vid2.shape[0])
+
+    # Create a plot for the middle vertical line pixel profile
+    fig = plt.figure()
+    with writer.saving(fig, out_path.as_posix(), nb_frames):
+        for i in range(nb_frames):
+            fig.clear()
+            plt.ylim(0, 255)
+            
+            if i < len(middle_line_values1):
+                plt.plot(gaussian_filter1d(middle_line_values1[i], sigma=6), color='blue', label=label1)
+                
+            if i < len(middle_line_values2):
+                plt.plot(gaussian_filter1d(middle_line_values2[i], sigma=6), color='red', label=label2)
+
+            plt.legend()
+            writer.grab_frame()
