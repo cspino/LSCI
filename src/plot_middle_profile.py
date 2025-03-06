@@ -1,5 +1,6 @@
 
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+import os
 from pathlib import Path
 
 import numpy as np
@@ -24,31 +25,44 @@ def read_video(video_path:Path)->Tuple[np.ndarray, int]:
 
 if __name__ == "__main__":
     parser = ArgumentParser(
-    prog = 'process_image',
-    description = 'Get temporal contrast image from thorcam video feed',
     formatter_class = ArgumentDefaultsHelpFormatter)
     parser.add_argument('-v', '--video_one',
                         required= True,
                         type = Path,
                         help = 'Path to video')
+    parser.add_argument('-l1', '--label_one',
+                        default = None,
+                        type = str,
+                        help = 'Label of second video for plot legend')
     parser.add_argument('-u', '--video_two',
                         required= True,
                         type = Path,
                         help = 'Path to video')
+    parser.add_argument('-l2', '--label_two',
+                        default = None,
+                        type = str,
+                        help = 'Label of second video for plot legend')
     parser.add_argument('-o', '--out',
                         required= True,
                         type = Path,
                         help = 'Output path')
     args = parser.parse_args()
-    
+    os.makedirs(args.out.parent, exist_ok=True)
 
     # Read frame
     frames1, fps1 = read_video(args.video_one)
     frames2, fps2 = read_video(args.video_two)
 
     # Get labels
-    label1 = args.video_one.parent.name
-    label2 = args.video_two.parent.name
+    if not args.label_one:
+        label1 = args.video_one.parent.name
+    else:
+        label1 = args.label_one
+
+    if not args.label_two:
+        label2 = args.video_two.parent.name
+    else:
+        label2 = args.label_two
 
     if fps1 != fps2:
         print("WARNING: videos don't have the same fps. Using the min.")

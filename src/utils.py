@@ -10,6 +10,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from scipy.ndimage import gaussian_filter1d
+from tqdm import tqdm
+from scipy.ndimage import convolve, uniform_filter
 
 def update_sums(sum_s: np.ndarray,
                 sum_s2:np.ndarray,
@@ -74,9 +76,9 @@ def temporal_contrast(raw_video:np.ndarray, window_size:int, baseline:np.ndarray
     # create array for lsci images that will be calculated
     processed_frames = np.zeros([n_processed_frames, width, height], dtype=np.float32)
 
-    for i in range(n_processed_frames):
+    for i in tqdm (range(n_processed_frames), desc="Processing"):
         frames_window = raw_video[i:i+window_size, :, :]
-        print('frames window max: ', np.max(frames_window))
+        # print('frames window max: ', np.max(frames_window))
 
         if i==0:
         # for first frame
@@ -101,19 +103,38 @@ def temporal_contrast(raw_video:np.ndarray, window_size:int, baseline:np.ndarray
 
         # calculate contrast and add to array
         contrast = calculate_contrast_from_sums(sum_window, sum_squares_window, window_size)
-        print('contrast max: ', np.max(contrast))
+        # print('contrast max: ', np.max(contrast))
 
         if baseline is None:
             processed_frames[i, :, :] = contrast
         else:
             processed_frames[i, :, :] = contrast - baseline
 
-        print('processed frames max: ', processed_frames.max())
+        # print('processed frames max: ', processed_frames.max())
         
 
         old_frame = frames_window[0]
 
     return processed_frames, n_processed_frames
+
+
+def spatial_contrast(raw_video:np.ndarray, kernel_size:Tuple[int, int])->Tuple[np.ndarray, int]:
+    """
+    Calculate the spatial contrast for a given video
+    """
+    raw_video = raw_video.astype(np.float32)
+
+    processed_frames = np.zeros(raw_video.shape, dtype=np.float32)
+    
+    for i in tqdm (range(raw_video.shape[0]), desc="Processing"):
+        frame = raw_video[i]
+        mean_stack = uniform_filter(frame, size=kernel_size, mode='nearest')
+        std_stack = np.sqrt(uniform_filter(frame**2, size=kernel_size, mode='nearest') - mean_stack**2)
+        
+        # Step 2: Calculate contrast as std/mean (handle division by zero)
+        processed_frames[i] = np.divide(std_stack, mean_stack, out=np.zeros_like(std_stack), where=mean_stack != 0)
+
+    return processed_frames
 
 
 def read_folder_of_frames(folder_path:Path)->np.ndarray:
@@ -136,11 +157,14 @@ def plot_and_save_profile(vid1:np.ndarray,
     writer = animation.writers['ffmpeg']
     writer = writer(fps=fps)
 
-    print('vid1 shape: ', vid1.shape)
-    print('vid2 shape: ', vid2.shape)
+    # print('vid1 shape: ', vid1.shape)
+    # print('vid2 shape: ', vid2.shape)
 
-    middle_line_values1 = vid1[:,:, vid1.shape[2]//2]
-    middle_line_values2 = vid2[:,:, vid2.shape[2]//2]
+    # middle_line_values1 = vid1[:,:, vid1.shape[2]//2]
+    # middle_line_values2 = vid2[:,:, vid2.shape[2]//2]
+
+    middle_line_values1 = np.mean(vid1, axis=2)
+    middle_line_values2 = np.mean(vid2, axis=2)
 
     nb_frames = max(vid1.shape[0], vid2.shape[0])
 
@@ -152,10 +176,22 @@ def plot_and_save_profile(vid1:np.ndarray,
             plt.ylim(0, 255)
             
             if i < len(middle_line_values1):
-                plt.plot(gaussian_filter1d(middle_line_values1[i], sigma=6), color='blue', label=label1)
+                plt.plot(middle_line_values1[i], color='blue', label=label1)
+                # plt.plot(gaussian_filter1d(middle_line_values1[i], sigma=6), color='blue', label=label1)
                 
             if i < len(middle_line_values2):
-                plt.plot(gaussian_filter1d(middle_line_values2[i], sigma=6), color='red', label=label2)
+                plt.plot(middle_line_values2[i], color='red', label=label2)
+                # plt.plot(gaussian_filter1d(middle_line_values2[i], sigma=6), color='red', label=label2)
 
-            plt.legend()
+            plt.legend(loc='upper right')
             writer.grab_frame()
+
+
+def get_relative_flowmap(k_contrast:np.ndarray)->np.ndarray:
+    flowmap = 1/np.clip(k_contrast**2, 1e-5, None)
+
+    clip_to = np.percentile(flowmap, 95)
+    clip_to = np.max(flowmap[flowmap<=clip_to])
+    flowmap = np.clip(flowmap, 0, clip_to)
+
+    return flowmap

@@ -5,21 +5,19 @@ from pathlib import Path
 
 import time
 import cv2
-from matplotlib import pyplot as plt
 import skvideo.io
 # from skimage.exposure import equalize_adapthist
 import numpy as np
 
 from skimage.exposure import rescale_intensity
 from tqdm import tqdm
-from utils import temporal_contrast, read_folder_of_frames
+from utils import spatial_contrast, read_folder_of_frames, get_relative_flowmap
 from save_utils import save_relative_flow_map
-
 
 if __name__=="__main__":
     parser = ArgumentParser(
-    prog = 'temporal_contrast',
-    description = 'Get temporal contrast from raw video',
+    prog = 'spatial_contrast',
+    description = 'Get spatial contrast from raw video',
     formatter_class = ArgumentDefaultsHelpFormatter)
     parser.add_argument('-v', '--video',
                         required = True,
@@ -29,10 +27,10 @@ if __name__=="__main__":
                         required = True,
                         type = Path,
                         help = 'Path to output folder')
-    parser.add_argument('-w', '--window_size',
-                        default = 10,
-                        type = int,
-                        help = 'Temporal window size. 10 by default')
+    parser.add_argument('-w', '--kernel_size',
+                        default = (5,5),
+                        type = tuple,
+                        help = 'window size. 10 by default')
     parser.add_argument('-s', '--suffix',
                         default = None,
                         type = str,
@@ -52,7 +50,7 @@ if __name__=="__main__":
     baseline_contrast = None
     if args.baseline:
         baseline_img = skvideo.io.vread(args.baseline.as_posix())[:,:,:,1]
-        baseline_contrast, _ = temporal_contrast(baseline_img, args.window_size)
+        baseline_contrast, _ = spatial_contrast(baseline_img, args.window_size)
         baseline_contrast = np.mean(baseline_contrast, axis=0)
 
     # Get info on original video
@@ -92,58 +90,16 @@ if __name__=="__main__":
     # print("stack range: ")
     # print(" min: ", raw_speckle_img_seq.min())
     # print(" max: ", raw_speckle_img_seq.max())
-    t_lsci, num_frames = temporal_contrast(raw_speckle_img_seq, args.window_size, baseline_contrast)
+    t_lsci = spatial_contrast(raw_speckle_img_seq, args.kernel_size)
     # print(" K min: ", t_lsci.min())
     # print(" K max: ", t_lsci.max())
     # print(" K shape: ", t_lsci.shape)
     # print(" K dtype: ", t_lsci.dtype)
-
-    # clip_value = 0.5*t_lsci.max()
+    # clip_value = 0.4*t_lsci.max()
     # t_lsci = np.clip(t_lsci, 0, clip_value)
     # t_lsci = (t_lsci*255/t_lsci.max()).astype(np.uint8)
 
-    fig = plt.figure()
-    # plt.hist(t_lsci.flatten(), bins=50)
-    # plt.show()
-    # fig.clear()
-
-    # t_lsci = rescale_intensity(t_lsci)
-    # plt.hist(t_lsci.flatten(), bins=50)
-    # plt.show()
-    # fig.clear()
-    # t_lsci = (t_lsci*255).astype(np.uint8)
-    print('k: ', t_lsci.min(), ' -- ', t_lsci.max())
-    t_lsci = t_lsci**2
-    print('k2: ', t_lsci.min(), ' -- ', t_lsci.max())
-    # plt.hist(t_lsci.flatten(), bins=100)
-    # plt.show()
-    # fig.clear()
-    
-    t_lsci = 1/np.clip(t_lsci, 1e-5, None)
-    print('1/k2: ', t_lsci.min(), ' -- ', t_lsci.max())
-    # plt.hist(t_lsci.flatten(), bins=100)
-    # plt.show()
-    # fig.clear()
-
-    # Here, we clip any value higher than the 95th percentile
-    # to eliminate the extremely high values
-    clip_to = np.percentile(t_lsci, 95)
-    clip_to = np.max(t_lsci[t_lsci<=clip_to])
-    t_lsci = np.clip(t_lsci, 0, clip_to)
-    print('clipped: ', t_lsci.min(), ' -- ', t_lsci.max())
-    # plt.hist(t_lsci.flatten(), bins=50)
-    # plt.show()
-    # fig.clear()
-    
-    # # this might be needed for visualization, but the scale needs to be based on the
-    # # actual RFI values!!!
-    # t_lsci = ((t_lsci/t_lsci.max())*255).astype(np.uint8)
-    # print('normalized: ', t_lsci.min(), ' -- ', t_lsci.max())
-
-    # # plt.hist(t_lsci.flatten(), bins=50)
-    # # plt.show()
-    # # fig.clear()
-
+    t_lsci = get_relative_flowmap(t_lsci)
     save_relative_flow_map(t_lsci, args.output_dir/'processed.avi', frame_rate, show=args.show)
 
     # # save processed video
@@ -160,7 +116,7 @@ if __name__=="__main__":
     # # print(" min: ", t_lsci.min())
     # # print(" max: ", t_lsci.max())
 
-    # for i in tqdm (range(num_frames), desc="Saving video"):
+    # for i in tqdm (range(t_lsci.shape[0]), desc="Saving video"):
     #     frame = t_lsci[i]
 
     #     # Convert grayscale to BGR by repeating channels
