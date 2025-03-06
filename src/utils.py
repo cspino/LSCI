@@ -2,14 +2,16 @@
 Utils for LSCI video processing
 """
 import os
+import cv2
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 from natsort import natsorted
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from scipy.ndimage import gaussian_filter1d
+import skvideo
 from tqdm import tqdm
 from scipy.ndimage import convolve, uniform_filter
 
@@ -195,3 +197,44 @@ def get_relative_flowmap(k_contrast:np.ndarray)->np.ndarray:
     flowmap = np.clip(flowmap, 0, clip_to)
 
     return flowmap
+
+
+def read_video(vid_path:Path, 
+               default_fps=30, 
+               default_shape=(1080, 1920)
+               )->Tuple[Optional[np.ndarray], Optional[int]]:
+    """
+    Returns
+    -----------
+    video: np.ndarray
+    fps: int
+    """
+    if vid_path.is_dir():
+        # video is a directory
+        frame_rate = default_fps
+        video = read_folder_of_frames(vid_path)[:,:,:]
+        width = video.shape[2]
+        height = video.shape[1]
+
+    elif vid_path.suffix == ".raw":
+        # video is a raw file
+        height, width = default_shape # TODO these could be read from a params file?
+        frame_rate = default_fps
+        data = np.fromfile(vid_path, dtype=np.float32)
+        num_frames = data.size // (width*height)
+        video = data.reshape((num_frames, height, width))
+
+    else:
+        try:
+            # Get info on video
+            cap = cv2.VideoCapture(vid_path.as_posix())
+            frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
+            cap.release()
+
+            video = skvideo.io.vread(vid_path.as_posix())[:,:,:,1]
+        
+        except Exception as e:
+            print("Couldn't read video: ", vid_path, 'error: ', e)
+            return None, None
+    
+    return video, frame_rate

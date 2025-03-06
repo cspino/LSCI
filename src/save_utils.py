@@ -85,3 +85,34 @@ def save_relative_flow_map(stack:np.ndarray, output_path:Path, fps:int, show:boo
     
     # Release the VideoWriter
     video_writer.release()
+    cv2.destroyWindow('Frame')
+
+def save_speckle(speckle:np.ndarray, file_path:Path, frame_rate:int, show:bool=False):
+    n_frames, width, height = speckle.shape
+
+    # Normalize between 0 and 255
+    clip_value = 0.5*speckle.max() #TODO validate normalization
+    speckle = np.clip(speckle, 0, clip_value)
+    speckle = (speckle*255/speckle.max()).astype(np.uint8)
+
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    video_writer = cv2.VideoWriter((file_path).as_posix(), fourcc, frame_rate, (width, height))
+
+    for i in tqdm (range(n_frames), desc="Saving speckle video"):
+        frame = speckle[i]
+
+        # Convert grayscale to BGR by repeating channels
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) # Grayscale
+        vidout=cv2.resize(frame,(width,height))
+        video_writer.write(vidout)
+
+        if show:
+            cv2.imshow('Frame', frame)
+
+            # Wait for 1 ms and check if the user pressed the 'q' key to exit
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    
+    # Release the VideoWriter
+    cv2.destroyWindow('Frame')
+    video_writer.release()

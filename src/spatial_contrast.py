@@ -6,7 +6,6 @@ from pathlib import Path
 import time
 import cv2
 import skvideo.io
-# from skimage.exposure import equalize_adapthist
 import numpy as np
 
 from skimage.exposure import rescale_intensity
