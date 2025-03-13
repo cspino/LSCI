@@ -88,7 +88,7 @@ def save_relative_flow_map(stack:np.ndarray, output_path:Path, fps:int, show:boo
     cv2.destroyWindow('Frame')
 
 def save_speckle(speckle:np.ndarray, file_path:Path, frame_rate:int, show:bool=False):
-    n_frames, width, height = speckle.shape
+    n_frames, height, width = speckle.shape
 
     # Normalize between 0 and 255
     clip_value = 0.5*speckle.max() #TODO validate normalization

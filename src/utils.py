@@ -189,14 +189,14 @@ def plot_and_save_profile(vid1:np.ndarray,
             writer.grab_frame()
 
 
-def get_relative_flowmap(k_contrast:np.ndarray)->np.ndarray:
-    flowmap = 1/np.clip(k_contrast**2, 1e-5, None)
+def get_flow_index(k_contrast:np.ndarray)->np.ndarray:
+    index = 1/np.clip(k_contrast**2, 1e-5, None)
 
-    clip_to = np.percentile(flowmap, 95)
-    clip_to = np.max(flowmap[flowmap<=clip_to])
-    flowmap = np.clip(flowmap, 0, clip_to)
+    clip_to = np.percentile(index, 95)
+    clip_to = np.max(index[index<=clip_to])
+    index = np.clip(index, 0, clip_to)
 
-    return flowmap
+    return index
 
 
 def read_video(vid_path:Path, 
