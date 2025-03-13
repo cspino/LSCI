@@ -2,6 +2,7 @@
 Utils for LSCI video saving
 """
 from pathlib import Path
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
@@ -54,7 +55,7 @@ def render_frame(frame:np.ndarray, im, ax, stack_max)->np.ndarray:
     # plt.close(fig)
     return img
 
-def save_relative_flow_map(stack:np.ndarray, output_path:Path, fps:int, show:bool=False)->None:
+def save_flowmap(stack:np.ndarray, output_path:Path, fps:int, show:bool=False)->None:
     print("Saving relative flow map...")
     
     stack_max = stack.max()
@@ -65,16 +66,23 @@ def save_relative_flow_map(stack:np.ndarray, output_path:Path, fps:int, show:boo
 
     # Create the first frame and add the colorbar
     DPI = 100
-    fig, ax = plt.subplots(figsize=(stack[0].shape[1] / DPI, stack[0].shape[0] / DPI), dpi=DPI)
+    _, ax = plt.subplots(figsize=(stack[0].shape[1] / DPI, stack[0].shape[0] / DPI), dpi=DPI)
     im = ax.imshow(stack[0], cmap='plasma', vmin=0, vmax=stack_max)
     add_colorbar(im)  # Create the colorbar once
     ax.axis('off')
 
-    for i in tqdm(range(stack.shape[0]), desc="Saving video"):
+    for i in tqdm(range(stack.shape[0]), desc="Saving video", disable=True):
+        time1 = time.time()
         frame = render_frame(stack[i], im, ax, stack_max)
+        time2 = time.time()
+        print('Render time: ', time2-time1)
+
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) # Grayscale
         vidout = cv2.resize(frame, frame_size)
+        time3 = time.time()
+        print('cv2 time: ', time3-time2)
         video_writer.write(vidout)
+        print('Write time: ', time.time()-time3)
 
         if show:
             cv2.imshow('Frame', frame)
