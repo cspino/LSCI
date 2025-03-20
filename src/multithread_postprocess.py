@@ -214,10 +214,18 @@ if __name__=="__main__":
             out.release()
 
         if args.process:
-            command = ['python', 'temporal_contrast.py',
+            # command = ['python', 'temporal_contrast.py',
+            #             '-v', (args.output_dir/'raw_frames').as_posix(),
+            #             # '-v', binary_path.as_posix(),
+            #             '-o', args.output_dir.as_posix(),
+            #             '-w', str(args.window_size),
+            #             '--show']
+            # subprocess.run(command, shell=True)
+
+            command = ['python', 'process_videos.py',
                         '-v', (args.output_dir/'raw_frames').as_posix(),
-                        # '-v', binary_path.as_posix(),
                         '-o', args.output_dir.as_posix(),
-                        '-w', str(args.window_size),
-                        '--show']
+                        '--spatial',
+                        '--show',
+                        '--bfi']
             subprocess.run(command, shell=True)
