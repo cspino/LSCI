@@ -6,9 +6,65 @@ sys.path.append('..') # this is to be able to import files in project folder
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from pathlib import Path
 import os
+from typing import List, Tuple, Optional
 
 from utils import temporal_contrast, spatial_contrast, read_video
 from save_utils import save_flowmap, save_speckle
+
+def main(output_dir:Optional[Path],
+         videos:List[Path],
+         temporal:bool,
+         temporal_window:int,
+         spatial:bool,
+         spatial_window:Tuple[int,int],
+         bfi:bool,
+         show:bool=False):
+
+    for vid_path in videos:
+        print('Processing video: ', vid_path.as_posix())
+
+        video, frame_rate = read_video(vid_path)
+        vid_name = vid_path.stem
+
+        if video is None:
+            # Error reading video, we skip it
+            continue
+
+        if output_dir is None:
+            output_dir = vid_path.parent
+        
+        os.makedirs(output_dir, exist_ok=True)
+
+        if temporal:
+            speckle, _ = temporal_contrast(video, temporal_window)
+            filename = vid_name+f"_temporal.avi"
+            save_speckle(speckle, output_dir/filename, frame_rate, show)
+
+            if bfi:
+                # speckle = np.where(speckle == 0, 1, speckle*255)
+                flowmap = 1/speckle**2
+
+                clip_to = np.percentile(flowmap, 95)
+                clip_to = np.max(flowmap[flowmap<=clip_to])
+                flowmap = np.clip(flowmap, 0, clip_to)
+
+                save_flowmap(flowmap, output_dir/(vid_name+'_temporal_map.avi'), frame_rate, show=show)
+
+        if spatial:
+            speckle = spatial_contrast(video, spatial_window)
+            filename = vid_name+f"_spatial.avi"
+            save_speckle(speckle, output_dir/filename, frame_rate, show)
+
+            if bfi:
+                # speckle = np.where(speckle == 0, 1, speckle*255)
+                speckle = np.where(speckle == 0, 1e-5, speckle)
+                flowmap = 1/speckle**2
+
+                clip_to = np.percentile(flowmap, 95)
+                clip_to = np.max(flowmap[flowmap<=clip_to])
+                flowmap = np.clip(flowmap, 0, clip_to)
+
+                save_flowmap(flowmap, output_dir/(vid_name+'_spatial_map.avi'), frame_rate, show=show)
 
 if __name__=="__main__":
     parser = ArgumentParser(
@@ -58,53 +114,62 @@ if __name__=="__main__":
         print('No contrast type chosen. Use at least one of [spatial, temporal].')
         sys.exit()
 
-    output_dir = args.output_dir
+    main(args.output_dir,
+         args.videos,
+         args.temporal,
+         args.temporal_window,
+         args.spatial,
+         args.spatial_window,
+         args.bfi,
+         args.show)
 
-    for vid_path in args.videos:
-        print('Processing video: ', vid_path.as_posix())
+    # output_dir = args.output_dir
 
-        video, frame_rate = read_video(vid_path)
-        vid_name = vid_path.stem
+    # for vid_path in args.videos:
+    #     print('Processing video: ', vid_path.as_posix())
 
-        if video is None:
-            # Error reading video, we skip it
-            continue
+    #     video, frame_rate = read_video(vid_path)
+    #     vid_name = vid_path.stem
 
-        if args.output_dir is None:
-            output_dir = vid_path.parent
+    #     if video is None:
+    #         # Error reading video, we skip it
+    #         continue
+
+    #     if args.output_dir is None:
+    #         output_dir = vid_path.parent
         
-        os.makedirs(output_dir, exist_ok=True)
+    #     os.makedirs(output_dir, exist_ok=True)
 
-        if args.temporal:
-            speckle, _ = temporal_contrast(video, args.temporal_window)
-            filename = vid_name+f"_temporal.avi"
-            save_speckle(speckle, output_dir/filename, frame_rate, args.show)
+    #     if args.temporal:
+    #         speckle, _ = temporal_contrast(video, args.temporal_window)
+    #         filename = vid_name+f"_temporal.avi"
+    #         save_speckle(speckle, output_dir/filename, frame_rate, args.show)
 
-            if args.bfi:
-                # speckle = np.where(speckle == 0, 1, speckle*255)
-                flowmap = 1/speckle**2
+    #         if args.bfi:
+    #             # speckle = np.where(speckle == 0, 1, speckle*255)
+    #             flowmap = 1/speckle**2
 
-                clip_to = np.percentile(flowmap, 95)
-                clip_to = np.max(flowmap[flowmap<=clip_to])
-                flowmap = np.clip(flowmap, 0, clip_to)
+    #             clip_to = np.percentile(flowmap, 95)
+    #             clip_to = np.max(flowmap[flowmap<=clip_to])
+    #             flowmap = np.clip(flowmap, 0, clip_to)
 
-                save_flowmap(flowmap, output_dir/(vid_name+'_temporal_map.avi'), frame_rate, show=args.show)
+    #             save_flowmap(flowmap, output_dir/(vid_name+'_temporal_map.avi'), frame_rate, show=args.show)
 
-        if args.spatial:
-            speckle = spatial_contrast(video, args.spatial_window)
-            filename = vid_name+f"_spatial.avi"
-            save_speckle(speckle, output_dir/filename, frame_rate, args.show)
+    #     if args.spatial:
+    #         speckle = spatial_contrast(video, args.spatial_window)
+    #         filename = vid_name+f"_spatial.avi"
+    #         save_speckle(speckle, output_dir/filename, frame_rate, args.show)
 
-            if args.bfi:
-                # speckle = np.where(speckle == 0, 1, speckle*255)
-                speckle = np.where(speckle == 0, 1e-5, speckle)
-                flowmap = 1/speckle**2
+    #         if args.bfi:
+    #             # speckle = np.where(speckle == 0, 1, speckle*255)
+    #             speckle = np.where(speckle == 0, 1e-5, speckle)
+    #             flowmap = 1/speckle**2
 
-                clip_to = np.percentile(flowmap, 95)
-                clip_to = np.max(flowmap[flowmap<=clip_to])
-                flowmap = np.clip(flowmap, 0, clip_to)
+    #             clip_to = np.percentile(flowmap, 95)
+    #             clip_to = np.max(flowmap[flowmap<=clip_to])
+    #             flowmap = np.clip(flowmap, 0, clip_to)
 
-                save_flowmap(flowmap, output_dir/(vid_name+'_spatial_map.avi'), frame_rate, show=args.show)
+    #             save_flowmap(flowmap, output_dir/(vid_name+'_spatial_map.avi'), frame_rate, show=args.show)
 
 
 

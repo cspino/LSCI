@@ -2,6 +2,8 @@ import os
 import subprocess
 from PyQt5.QtWidgets import *
 import sys
+
+# from utils import launch_processing
 sys.path.append('..') # this is to be able to import files in project folder
 import numpy as np
 import pyqtgraph as pg
@@ -15,6 +17,8 @@ import queue
 from pathlib import Path
 import threading
 from app_ui import Ui_MainWindow
+import multiprocessing
+import process_videos
 
 from thorlabs_tsi_sdk.tl_camera import TLCameraSDK, OPERATION_MODE
 from thorlabs_tsi_sdk.tl_camera_enums import DATA_RATE
@@ -50,6 +54,10 @@ class Window(QMainWindow, Ui_MainWindow):
 
         self.recording = threading.Event()
 
+        # To keep track of processing launched
+        self.processes = {} # Stores processes
+        self.monitor_threads = {} # Stores QThreads
+
     # method for components
     def UiComponents(self):
         # widget = QWidget()
@@ -76,6 +84,9 @@ class Window(QMainWindow, Ui_MainWindow):
         # Synchronize both spin boxes for spatial window size
         self.spatial_window1.valueChanged.connect(self.sync_spatial_window_boxes)
         self.spatial_window2.valueChanged.connect(self.sync_spatial_window_boxes)
+
+        self.process_table.setColumnWidth(0,25)
+        self.process_table.setColumnWidth(1,150)
 
         pg.setConfigOptions(antialias=True)
         # self.win = pg.GraphicsLayoutWidget()
@@ -122,7 +133,7 @@ class Window(QMainWindow, Ui_MainWindow):
 
     def browse_directory(self):
         """Open a directory dialog to select an output directory"""
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory", self.output_dir)
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory", self.output_dir.as_posix())
         if dir_path:
             self.output_dir = Path(dir_path)  # Set the selected directory
             self.output_dir_line_edit.setText(str(self.output_dir))
@@ -193,27 +204,63 @@ class Window(QMainWindow, Ui_MainWindow):
         thread.start()
 
         if self.SpatialBox.isChecked() or self.TemporalBox.isChecked():
-            # Start subprocess to process .raw vid
-            command = ['python', 'process_videos.py',
-                        '-v', raw_path.as_posix(),
-                        '-o', (raw_path.parent).as_posix()]
-            
-            if self.SpatialBox.isChecked():
-                command.append('--spatial')
-                command.extend(['-sw', (self.spatial_window1.value(), self.spatial_window2.value())])
+            # Launch processing
+            # launch_processing(raw_path,
+            #                   self.SpatialBox.isChecked(),
+            #                   self.TemporalBox.isChecked(),
+            #                   self.BFI_CheckBox.isEnabled() and self.BFI_CheckBox.isChecked(),
+            #                   (self.spatial_window1.value(), self.spatial_window2.value()),
+            #                   self.temp_window.value())
 
-            if self.TemporalBox.isChecked():
-                command.append('--temporal')
-                command.extend(['-tw', self.temporal_window.value()])
+            params = {'output_dir':None,
+                      'videos':[raw_path],
+                      'temporal':self.TemporalBox.isChecked(),
+                      'temporal_window':self.temp_window.value(),
+                      'spatial':self.SpatialBox.isChecked(),
+                      'spatial_window':(self.spatial_window1.value(), self.spatial_window2.value()),
+                      'bfi':self.BFI_CheckBox.isEnabled() and self.BFI_CheckBox.isChecked()}
+            process = multiprocessing.Process(target=process_videos.main, kwargs=params)
+            process.start()
 
-            if self.BFI_CheckBox.isEnabled() and self.BFI_CheckBox.isChecked():
-                command.append('--bfi')
+            process_id = len(self.processes) + 1
+            self.processes[process_id] = process
+            # item = QListWidgetItem(f"Video {process_id}: Processing...")
+            row = self.process_table.rowCount()
+            self.process_table.insertRow(row)
+            self.process_table.setRowHeight(row, 25)
+            self.process_table.setItem(row, 0, QTableWidgetItem(f"{process_id}"))
+            self.process_table.setItem(row, 1, QTableWidgetItem("Processing..."))
 
-            subprocess.Popen(command, shell=True)
+            monitor_thread = ProcessMonitor(process_id, process)
+            monitor_thread.finished_signal.connect(lambda pid=process_id: self.update_thread_status(pid))
+            monitor_thread.start()
+            self.monitor_threads[process_id] = monitor_thread
+
+
+    def update_thread_status(self, process_id):
+        print("HERE")
+        for row in range(self.process_table.rowCount()):
+            item = self.process_table.item(row, 0)
+            if item and int(item.text()) == process_id:
+                self.process_table.setItem(row, 1, QTableWidgetItem("Finished!"))
+                break
+
 
     def _cleanup_thread(self, thread):
         self.save_as_vid_threads.remove(thread)
         print(f"Thread for {thread.raw_path} has finished.")
+
+class ProcessMonitor(QThread):
+    finished_signal = pyqtSignal(int)
+
+    def __init__(self, process_id, process):
+        super().__init__()
+        self.process_id = process_id
+        self.process = process
+
+    def run(self):
+        self.process.join()
+        self.finished_signal.emit(self.process_id)
 
 
 class CameraWorker(QThread):

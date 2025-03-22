@@ -2,6 +2,7 @@
 Utils for LSCI video processing
 """
 import os
+import subprocess
 import cv2
 from pathlib import Path
 from typing import Tuple, Optional
@@ -14,6 +15,7 @@ from scipy.ndimage import gaussian_filter1d
 import skvideo
 from tqdm import tqdm
 from scipy.ndimage import convolve, uniform_filter
+
 
 def update_sums(sum_s: np.ndarray,
                 sum_s2:np.ndarray,
@@ -238,3 +240,26 @@ def read_video(vid_path:Path,
             return None, None
     
     return video, frame_rate
+
+def launch_processing_script(raw_path:Path,
+                      spatial:bool,
+                      temporal:bool,
+                      bfi:bool,
+                      spatial_window:Tuple[int,int],
+                      temporal_window:int):
+    command = ['python', 'process_videos.py',
+                '-v', raw_path.as_posix(),
+                '-o', (raw_path.parent).as_posix()]
+    
+    if spatial:
+        command.append('--spatial')
+        command.extend(['-sw', spatial_window])
+
+    if temporal:
+        command.append('--temporal')
+        command.extend(['-tw', temporal_window])
+
+    if bfi:
+        command.append('--bfi')
+
+    subprocess.Popen(command, shell=True)
