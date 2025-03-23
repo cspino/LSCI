@@ -1,16 +1,19 @@
 import os
 import subprocess
+import skvideo
 from PyQt5.QtWidgets import *
 import sys
-
 # from utils import launch_processing
 sys.path.append('..') # this is to be able to import files in project folder
+# from windows_setup import configure_path
+# configure_path()
 import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtGui import *
 from PyQt5.QtCore import *
 from PyQt5 import QtCore
-import pyqtgraph.ptime as ptime
+# from pyqtgraph import ptime
+
 import cv2
 import toml
 import queue
@@ -370,7 +373,7 @@ class SaveAsVideo(QThread):
             out = cv2.VideoWriter((self.raw_path.with_suffix('.avi')).as_posix(), fourcc, fps, frame_size, False)
 
             # full_sequence_raw = cv2.cvtColor(full_sequence_raw, cv2.COLOR_GRAY2BGR)
-            print('raw range when saving: ', np.min(full_sequence_raw), ' -- ', np.max(full_sequence_raw)) 
+            # print('raw range when saving: ', np.min(full_sequence_raw), ' -- ', np.max(full_sequence_raw)) 
             # print('dtype ----- ', full_sequence_raw.dtype)
 
             for i in range(full_sequence_raw.shape[0]):

@@ -7,11 +7,11 @@ import cv2
 from pathlib import Path
 from typing import Tuple, Optional
 from natsort import natsorted
-from PIL import Image
+# from PIL import Image # TODO replace this
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
-from scipy.ndimage import gaussian_filter1d
+# from scipy.ndimage import gaussian_filter1d
 import skvideo
 from tqdm import tqdm
 from scipy.ndimage import convolve, uniform_filter
@@ -141,11 +141,20 @@ def spatial_contrast(raw_video:np.ndarray, kernel_size:Tuple[int, int])->Tuple[n
     return processed_frames
 
 
-def read_folder_of_frames(folder_path:Path)->np.ndarray:
+# def read_folder_of_frames(folder_path:Path)->np.ndarray:
+#     filenames = os.listdir(folder_path)
+#     filenames = natsorted(filenames)
+#     images = [np.array(Image.open(folder_path/file), dtype=np.float32) for file in filenames if os.path.isfile(folder_path/file)]
+
+    
+#     stacked_images = np.stack(images, axis=0)
+#     return stacked_images
+
+def read_folder_of_frames(folder_path: Path) -> np.ndarray:
     filenames = os.listdir(folder_path)
     filenames = natsorted(filenames)
-    images = [np.array(Image.open(folder_path/file), dtype=np.float32) for file in filenames if os.path.isfile(folder_path/file)]
-
+    images = [cv2.imread(str(folder_path / file), cv2.IMREAD_UNCHANGED).astype(np.float32)
+              for file in filenames if os.path.isfile(folder_path / file)]
     
     stacked_images = np.stack(images, axis=0)
     return stacked_images
