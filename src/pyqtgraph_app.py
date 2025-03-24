@@ -1,8 +1,11 @@
+from multiprocessing import Process, shared_memory
 import os
 import subprocess
 import skvideo
 from PyQt5.QtWidgets import *
 import sys
+
+from utils import spatial_bfi_frame, spatial_one_frame
 # from utils import launch_processing
 sys.path.append('..') # this is to be able to import files in project folder
 # from windows_setup import configure_path
@@ -25,6 +28,8 @@ import process_videos
 
 from thorlabs_tsi_sdk.tl_camera import TLCameraSDK, OPERATION_MODE
 from thorlabs_tsi_sdk.tl_camera_enums import DATA_RATE
+
+LIVE_DTYPE = np.float32
 
 pg.setConfigOptions(useOpenGL=True, enableExperimental=True) # Reduces lag in displayed stream
 
@@ -57,9 +62,14 @@ class Window(QMainWindow, Ui_MainWindow):
 
         self.recording = threading.Event()
 
-        # To keep track of processing launched
+        # To keep track of processing launched (post)
         self.processes = {} # Stores processes
         self.monitor_threads = {} # Stores QThreads
+
+        # Live processing
+        self.live_processing = False
+        self.signal_queue = multiprocessing.Queue()
+        self.DisplayProcessed = None
 
     # method for components
     def UiComponents(self):
@@ -90,6 +100,13 @@ class Window(QMainWindow, Ui_MainWindow):
 
         self.process_table.setColumnWidth(0,25)
         self.process_table.setColumnWidth(1,150)
+
+        # Radio buttons for display
+        button_group = QButtonGroup(self)
+        button_group.addButton(self.radio_raw)
+        button_group.addButton(self.radio_temporal)
+        button_group.addButton(self.radio_spatial)
+
 
         pg.setConfigOptions(antialias=True)
         # self.win = pg.GraphicsLayoutWidget()
@@ -147,11 +164,33 @@ class Window(QMainWindow, Ui_MainWindow):
             print("Starting acquisition...")
             self.StartButton.setText("Stop")
             # self.StartButton.setChecked(True)
+
+            if not self.radio_raw.isChecked():
+                n_bytes = np.empty((1920,1080), dtype=LIVE_DTYPE).nbytes
+                self.spatial_mem = shared_memory.SharedMemory(create=True, name='spatial', size=n_bytes)
+                self.processed_mem = shared_memory.SharedMemory(create=True, name='processed', size=n_bytes)
+                print('mem files created')
             
             # Start worker to handle video feed
-            self.CameraWorker = CameraWorker(self.frame_queue, self.recording)
+            self.CameraWorker = CameraWorker(self.frame_queue, self.recording, self.radio_raw.isChecked())
             self.CameraWorker.start()
-            self.CameraWorker.ImageUpdate.connect(self.ImageUpdateSlot)
+
+            if self.radio_raw.isChecked():
+                self.CameraWorker.ImageUpdate.connect(self.ImageUpdateSlot)
+
+            elif self.radio_spatial.isChecked():
+                self.live_processing = True
+                self.stop_live_processing = multiprocessing.Event()
+                # print('kwargs: ', {'kernel_size':self.temp_window.value(), 'out_queue': self.signal_queue, "stop_event": self.stop_live_processing})
+                self.live_process = multiprocessing.Process(target=spatial_worker, args=(self.temp_window.value(),
+                                                                                          self.signal_queue,
+                                                                                          self.stop_live_processing))
+                # self.live_process = SpatialWorker(self.temp_window.value(), self.signal_queue, self.stop_live_processing)
+                self.live_process.start()
+
+                self.DisplayProcessed = DisplayProcessed(self.signal_queue)
+                self.DisplayProcessed.start()
+                self.DisplayProcessed.ImageUpdate.connect(lambda image: self.ImageUpdateSlot(image, processed=True))
 
             self.RecordButton.setEnabled(True)
 
@@ -164,7 +203,15 @@ class Window(QMainWindow, Ui_MainWindow):
             
             if self.CameraWorker:
                 self.CameraWorker.stop()  # Stop the video feed worker
-                
+
+            if self.DisplayProcessed:
+                self.live_processing = False
+                self.DisplayProcessed.stop()
+                self.stop_live_processing.set()
+                self.processed_mem.close()
+                self.spatial_mem.close()
+                self.DisplayProcessed = None
+                print('2')
 
     def ToggleRecord(self):
         if  self.RecordButton.isChecked():
@@ -188,12 +235,15 @@ class Window(QMainWindow, Ui_MainWindow):
             self.StartButton.setEnabled(True)
 
 
-    def ImageUpdateSlot(self, image):
-        # self.img.setScale(1)
-        # self.img.setPos(0, 0)
-        self.img.setImage(image)
-        # self.img.setRect(QRectF(0, 0, 1920, 1080))
-        self.view.autoRange()
+    def ImageUpdateSlot(self, image, processed=False):
+        # If were showing processed frames (processed=True), 
+        # then we want to make sure that self.live_processing hasnt been 
+        # set to false to avoid acessing the shared memory that has 
+        # been discarded
+        if self.live_processing and processed:
+            self.img.setImage(image)
+            # self.img.setRect(QRectF(0, 0, 1920, 1080))
+            self.view.autoRange()
 
     def CancelFeed(self):
         self.CameraWorker.stop()
@@ -265,15 +315,49 @@ class ProcessMonitor(QThread):
         self.process.join()
         self.finished_signal.emit(self.process_id)
 
+class DisplayProcessed(QThread):
+    ImageUpdate = pyqtSignal(np.ndarray)
+
+    def __init__(self, signal_queue:multiprocessing.Queue):
+        super().__init__()
+        print('DisplayProcessed initialized')
+        self.signal_queue = signal_queue
+        self.ThreadActive = False
+        self.dtype = LIVE_DTYPE
+
+        self.processed_shm = shared_memory.SharedMemory(name='processed')
+        self.processed_frame = np.ndarray((1920,1080), dtype=self.dtype, buffer=self.processed_shm.buf)
+
+    def run(self):
+        self.ThreadActive = True
+        while self.ThreadActive:
+            # Wait for new frame signal and update frame
+            self.signal_queue.get()
+            self.ImageUpdate.emit(self.processed_frame)
+            # print('got a frame')
+            # print(self.ThreadActive)
+        print('out of while in DisplayProcessed')
+        self.processed_shm.close()
+
+    def stop(self):
+        self.ThreadActive = False
+        print('4')
+        # self.quit()
+
 
 class CameraWorker(QThread):
     ImageUpdate = pyqtSignal(np.ndarray)
 
-    def __init__(self, frame_queue, recording:threading.Event):
+    def __init__(self, frame_queue, recording:threading.Event, display_raw=True):
         super().__init__()
         self.frame_queue = frame_queue
         self.ThreadActive = False
         self.recording = recording
+        self.display_raw = display_raw
+
+        if not display_raw:
+            self.raw_shm = shared_memory.SharedMemory(create=False, name='spatial')
+            self.raw_frame = np.ndarray((1920,1080), dtype=LIVE_DTYPE, buffer=self.raw_shm.buf)
 
     def run(self):
         self.ThreadActive = True
@@ -305,23 +389,35 @@ class CameraWorker(QThread):
                     frame = camera.get_pending_frame_or_null()
                     if frame is not None:
                         # print('frame number: ', frame.frame_count)
-                        frame = np.copy(frame.image_buffer).astype(np.float32)
+                        frame_float32 = np.copy(frame.image_buffer).astype(np.float32)
                         if self.recording.is_set():
                             # Currently recording
-                            self.frame_queue.put(frame)
-                        frame = ((frame-frame.min())/(frame.max()-frame.min()) * 255).astype(np.uint8)
-                        frame = cv2.transpose(frame)
-                        frame = cv2.flip(frame, -1)
+                            self.frame_queue.put(frame_float32)
+                        frame_float32 = cv2.transpose(frame_float32)
+                        frame_float32 = cv2.flip(frame_float32, -1)
+
+                        frame = ((frame_float32-frame_float32.min())/(frame_float32.max()-frame_float32.min()) * 255).astype(np.uint8)
+                        
                         # ConvertToQtFormat = QImage(FlippedImage.data, 
                         #                            FlippedImage.shape[1], 
                         #                            FlippedImage.shape[0], 
                         #                            QImage.Format_Grayscale8)
                         # Pic = ConvertToQtFormat.scaled(1920/2, 1080/2, Qt.KeepAspectRatio)
-                        self.ImageUpdate.emit(frame)
+                        if self.display_raw:
+                            self.ImageUpdate.emit(frame)
+                        else:
+                            # Live processing is activated
+                            self.raw_frame[:] = frame_float32[:]
+                print('out of while')
+                if not self.display_raw:
+                    self.raw_shm.close()
+                        
     
     def stop(self):
         self.ThreadActive = False
-        self.quit()
+        # if not self.display_raw:
+        #     self.raw_shm.close()
+        # self.quit()
 
 
 class SaveThread(QThread):
@@ -386,13 +482,31 @@ class SaveAsVideo(QThread):
                 out.write(frame)
             out.release()
 
+def spatial_worker(kernel_size, out_queue:multiprocessing.Queue, stop_event,
+                raw_mem:str="spatial", processed_mem:str="processed"):
+
+    raw_shm = shared_memory.SharedMemory(create=False, name=raw_mem)
+    raw_frame = np.ndarray((1920,1080), dtype=LIVE_DTYPE, buffer=raw_shm.buf)
+
+    processed_shm = shared_memory.SharedMemory(create=False, name=processed_mem)
+    processed_frame = np.ndarray((1920,1080), dtype=LIVE_DTYPE, buffer=processed_shm.buf)
+        
+    while not stop_event.is_set():
+        working_copy = raw_frame.copy()
+        processed_frame[:] = spatial_bfi_frame(working_copy, kernel_size)[:]
+        out_queue.put('signal')
+        # print('frame processed and signal sent')
+    raw_shm.close()
+    processed_shm.close()
+    print('3')
+
 
 if __name__ == "__main__":
     # create pyqt5 app
-    App = QApplication(sys.argv)
+    App = QApplication(sys.argv) #TODO Add wrapper to cleanup live processing workers upon exit
 
     # create the instance of our Window
     window = Window()
 
     # start the app
-    sys.exit(App.exec())
+    sys.exit(App.exec_())

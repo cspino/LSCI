@@ -130,16 +130,27 @@ def spatial_contrast(raw_video:np.ndarray, kernel_size:Tuple[int, int])->Tuple[n
 
     processed_frames = np.zeros(raw_video.shape, dtype=np.float32)
     
+    # TODO couldnt this be optimized instead of iterating over frames?
     for i in tqdm (range(raw_video.shape[0]), desc="Processing"):
-        frame = raw_video[i]
-        mean_stack = uniform_filter(frame, size=kernel_size, mode='nearest')
-        std_stack = np.sqrt(uniform_filter(frame**2, size=kernel_size, mode='nearest') - mean_stack**2)
-        
-        # Step 2: Calculate contrast as std/mean (handle division by zero)
-        processed_frames[i] = np.divide(std_stack, mean_stack, out=np.zeros_like(std_stack), where=mean_stack != 0)
+        processed_frames[i] = spatial_one_frame(raw_video[i], kernel_size)
 
     return processed_frames
 
+def spatial_one_frame(frame:np.ndarray, kernel_size):
+    mean = uniform_filter(frame, size=kernel_size, mode='nearest')
+    std = np.sqrt(uniform_filter(frame**2, size=kernel_size, mode='nearest') - mean**2)
+
+    # Step 2: Calculate contrast as std/mean (handle division by zero)
+    return np.divide(std, mean, out=np.zeros_like(std), where=mean != 0)
+
+def spatial_bfi_frame(frame:np.ndarray, kernel_size):
+    speckle = spatial_one_frame(frame, kernel_size)
+    speckle = np.where(speckle == 0, 1e-5, speckle)
+    flowmap = 1/speckle**2
+
+    clip_to = np.percentile(flowmap, 95)
+    clip_to = np.max(flowmap[flowmap<=clip_to])
+    return np.clip(flowmap, 0, clip_to)
 
 # def read_folder_of_frames(folder_path:Path)->np.ndarray:
 #     filenames = os.listdir(folder_path)
