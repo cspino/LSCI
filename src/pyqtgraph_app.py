@@ -33,6 +33,21 @@ LIVE_DTYPE = np.float32
 
 pg.setConfigOptions(useOpenGL=True, enableExperimental=True) # Reduces lag in displayed stream
 
+class MyApp(QApplication):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.aboutToQuit.connect(self.cleanup)
+        self.main_window = None
+
+    def set_main_window(self, window):
+        self.main_window = window
+
+    def cleanup(self):
+        if self.main_window.live_processing:
+            self.main_window.stop_live_processing.set()
+            print('cleanup done')
+
+
 # Image View class
 class ImageView(pg.ImageView):
     # constructor which inherit original ImageView
@@ -69,7 +84,7 @@ class Window(QMainWindow, Ui_MainWindow):
         # Live processing
         self.live_processing = False
         self.signal_queue = multiprocessing.Queue()
-        self.DisplayProcessed = None
+        self.DisplayProcessed = None # This stores the process responsible for real time processing
 
     # method for components
     def UiComponents(self):
@@ -102,10 +117,10 @@ class Window(QMainWindow, Ui_MainWindow):
         self.process_table.setColumnWidth(1,150)
 
         # Radio buttons for display
-        button_group = QButtonGroup(self)
-        button_group.addButton(self.radio_raw)
-        button_group.addButton(self.radio_temporal)
-        button_group.addButton(self.radio_spatial)
+        self.button_group = QButtonGroup(self)
+        self.button_group.addButton(self.radio_raw)
+        self.button_group.addButton(self.radio_temporal)
+        self.button_group.addButton(self.radio_spatial)
 
 
         pg.setConfigOptions(antialias=True)
@@ -163,7 +178,10 @@ class Window(QMainWindow, Ui_MainWindow):
             # Start the acquisition
             print("Starting acquisition...")
             self.StartButton.setText("Stop")
-            # self.StartButton.setChecked(True)
+
+            # Disable radio buttons
+            for button in self.button_group.buttons():
+                button.setEnabled(False)
 
             if not self.radio_raw.isChecked():
                 n_bytes = np.empty((1920,1080), dtype=LIVE_DTYPE).nbytes
@@ -198,8 +216,11 @@ class Window(QMainWindow, Ui_MainWindow):
             # Stop the acquisition
             print("Stopping acquisition...")
             self.StartButton.setText("Start")
-            # # self.StartButton.setChecked(False)
             self.RecordButton.setEnabled(False)
+
+            # Enable radio buttons
+            for button in self.button_group.buttons():
+                button.setEnabled(True)
             
             if self.CameraWorker:
                 self.CameraWorker.stop()  # Stop the video feed worker
@@ -236,13 +257,17 @@ class Window(QMainWindow, Ui_MainWindow):
 
 
     def ImageUpdateSlot(self, image, processed=False):
-        # If were showing processed frames (processed=True), 
+        # If we're showing processed frames (processed=True), 
         # then we want to make sure that self.live_processing hasnt been 
         # set to false to avoid acessing the shared memory that has 
         # been discarded
-        if self.live_processing and processed:
+        if processed:
+            if self.live_processing:
+                self.img.setImage(image)
+                # self.img.setRect(QRectF(0, 0, 1920, 1080))
+                self.view.autoRange()
+        else:
             self.img.setImage(image)
-            # self.img.setRect(QRectF(0, 0, 1920, 1080))
             self.view.autoRange()
 
     def CancelFeed(self):
@@ -408,7 +433,6 @@ class CameraWorker(QThread):
                         else:
                             # Live processing is activated
                             self.raw_frame[:] = frame_float32[:]
-                print('out of while')
                 if not self.display_raw:
                     self.raw_shm.close()
                         
@@ -503,10 +527,12 @@ def spatial_worker(kernel_size, out_queue:multiprocessing.Queue, stop_event,
 
 if __name__ == "__main__":
     # create pyqt5 app
-    App = QApplication(sys.argv) #TODO Add wrapper to cleanup live processing workers upon exit
+    App = MyApp(sys.argv) #TODO Add wrapper to cleanup live processing workers upon exit
 
     # create the instance of our Window
     window = Window()
+
+    App.set_main_window(window)
 
     # start the app
     sys.exit(App.exec_())
