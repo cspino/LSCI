@@ -1,6 +1,7 @@
 from multiprocessing import Process, shared_memory
 import os
 import subprocess
+import time
 import skvideo
 from PyQt5.QtWidgets import *
 import sys
@@ -76,6 +77,9 @@ class Window(QMainWindow, Ui_MainWindow):
         self.save_as_vid_threads = []
 
         self.recording = threading.Event()
+        self.CameraWorker = None
+        self.data = None
+        self.frame_counter = 0
 
         # To keep track of processing launched (post)
         self.processes = {} # Stores processes
@@ -95,7 +99,7 @@ class Window(QMainWindow, Ui_MainWindow):
 
 
         # self.StartButton = QPushButton("Start Acquisition")
-        self.StartButton.clicked.connect(self.ToggleAcquisition)
+        self.StartButton.clicked.connect(lambda: self.ToggleAcquisition(False))
 
         # Output directory selection
         # self.output_dir_line_edit = QLineEdit(self)
@@ -119,13 +123,13 @@ class Window(QMainWindow, Ui_MainWindow):
         # Radio buttons for display
         self.button_group = QButtonGroup(self)
         self.button_group.addButton(self.radio_raw)
-        self.button_group.addButton(self.radio_temporal)
         self.button_group.addButton(self.radio_spatial)
 
 
         pg.setConfigOptions(antialias=True)
         # self.win = pg.GraphicsLayoutWidget()
         self.win.ci.setContentsMargins(0, 0, 0, 0)
+
         # self.p1 = self.win.addPlot()
         # self.img = pg.ImageItem()
         # self.p1.addItem(self.img)
@@ -139,8 +143,15 @@ class Window(QMainWindow, Ui_MainWindow):
         # self.p1.scale(1.0, 1.0)
         # self.p1.setLimits(xMin=0, xMax=1920, yMin=0, yMax=1080)
 
+        # self.win.ci.layout.setRowStretchFactor(0,1)
+        # self.win.ci.layout.setRowStretchFactor(1,3)
 
-        self.view = self.win.addViewBox()
+
+        self.profile_plot = self.win.addPlot(row=0,col=1)
+        self.profile_plot.setMaximumWidth(100)
+        self.profile = self.profile_plot.plot()
+
+        self.view = self.win.addViewBox(row=0, col=2)
         # view.setBackgroundColor('w')
         self.view.setMouseEnabled(x=False, y=False)
         self.view.setAspectLocked(True)
@@ -151,6 +162,48 @@ class Window(QMainWindow, Ui_MainWindow):
         # self.img.setPos(-frac*1920, -frac*1080)
         self.view.addItem(self.img)
 
+        self.gradient_bar = pg.ColorBarItem(interactive=False)
+        self.gradient_bar.setImageItem(self.img)
+        # self.gradient_bar.setOrientation('horizontal')  # Horizontal bar
+        self.win.addItem(self.gradient_bar, row=0, col=3)
+
+        # Custom ROI for selecting an image region
+        self.roi = pg.ROI([0, 0], [1920, 1080])
+        self.roi_indices = [0,1920,0,1080]
+        self.roi.addScaleHandle([0.5, 1], [0.5, 0.5])
+        self.roi.addScaleHandle([0, 0.5], [0.5, 0.5])
+        self.view.addItem(self.roi)
+        self.roi.setZValue(10)  # make sure ROI is drawn above image
+
+        self.roi.sigRegionChanged.connect(self.updateRoi)
+
+    def updateRoi(self):
+        pos = self.roi.pos()
+        size = self.roi.size()
+        self.roi_indices = [int(pos.x()), int(pos.x()+size.x()), int(pos.y()), int(pos.y()+size.y())] #x1, x2, y1, y2
+        # print(self.roi_indices)
+
+        if not self.data is None:
+            self.updatePlot()
+
+
+    def updatePlot(self):
+        # selected = self.roi.getArrayRegion(self.data, self.img)
+        # print("y1: ", self.roi_indices[3])
+        # print("y2: ", self.roi_indices[2])
+        # print("x1: ", self.roi_indices[0])
+        # print("x2: ", self.roi_indices[1])
+
+        selected = self.data[self.roi_indices[0]:self.roi_indices[1],
+                             self.roi_indices[2]:self.roi_indices[3]]
+        
+
+        y_values = selected.mean(axis=0)
+        x_values = np.arange(len(y_values))
+        self.profile.setData(y_values, x_values)
+        self.profile_max.setText("{:.3f}".format(np.max(y_values)))
+
+        
 
     def sync_spatial_window_boxes(self):
         sender = self.sender()  # Get the widget that triggered the signal
@@ -173,8 +226,27 @@ class Window(QMainWindow, Ui_MainWindow):
             self.output_dir = Path(dir_path)  # Set the selected directory
             self.output_dir_line_edit.setText(str(self.output_dir))
 
-    def ToggleAcquisition(self):
-        if self.StartButton.isChecked():
+    def SetColorMap(self, colormap:"pg.ColorMap|str", range_max):
+        if isinstance(colormap, str):
+            colormap = pg.colormap.get(colormap)
+        self.gradient_bar.setColorMap(colormap)
+        self.gradient_bar.setLevels(low=0, high=range_max)
+
+    def camera_error(self):
+        print("IN ERROR FUNCTION")
+        self.ToggleAcquisition(force_off=True) # Turn off Acquisition
+
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Camera Detection Error")
+        msg.setText("No camera detected. Make sure it is properly connected and try again.")
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec_()
+
+    def ToggleAcquisition(self, force_off=False):
+        print(self.StartButton.isChecked())
+        print(force_off)
+        if self.StartButton.isChecked() and not force_off:
             # Start the acquisition
             print("Starting acquisition...")
             self.StartButton.setText("Stop")
@@ -192,9 +264,11 @@ class Window(QMainWindow, Ui_MainWindow):
             # Start worker to handle video feed
             self.CameraWorker = CameraWorker(self.frame_queue, self.recording, self.radio_raw.isChecked())
             self.CameraWorker.start()
+            self.CameraWorker.CameraError.connect(self.camera_error)
 
             if self.radio_raw.isChecked():
                 self.CameraWorker.ImageUpdate.connect(self.ImageUpdateSlot)
+                self.CameraWorker.FirstFrame.connect(lambda cmap, r_max: self.SetColorMap(cmap, r_max))
 
             elif self.radio_spatial.isChecked():
                 self.live_processing = True
@@ -206,13 +280,22 @@ class Window(QMainWindow, Ui_MainWindow):
                 # self.live_process = SpatialWorker(self.temp_window.value(), self.signal_queue, self.stop_live_processing)
                 self.live_process.start()
 
-                self.DisplayProcessed = DisplayProcessed(self.signal_queue)
+                self.DisplayProcessed = DisplayProcessed(self.signal_queue, self.gradient_bar)
                 self.DisplayProcessed.start()
                 self.DisplayProcessed.ImageUpdate.connect(lambda image: self.ImageUpdateSlot(image, processed=True))
+                self.DisplayProcessed.FirstFrame.connect(lambda cmap, r_max: self.SetColorMap(cmap, r_max))
+
+                # Apply a colormap
+                # self.img.setLookupTable(pg.colormap.get('magma').getLookupTable())
+                # self.img.setLevels([data.min(), data.max()])  # Optional: Adjust intensity range
+                # self.gradient_bar.setColorMap(pg.colormap.get('magma'))
+        
 
             self.RecordButton.setEnabled(True)
 
         else:
+            if force_off:
+                self.StartButton.setChecked(False)
             # Stop the acquisition
             print("Stopping acquisition...")
             self.StartButton.setText("Start")
@@ -262,13 +345,22 @@ class Window(QMainWindow, Ui_MainWindow):
         # set to false to avoid acessing the shared memory that has 
         # been discarded
         if processed:
-            if self.live_processing:
-                self.img.setImage(image)
-                # self.img.setRect(QRectF(0, 0, 1920, 1080))
-                self.view.autoRange()
-        else:
-            self.img.setImage(image)
-            self.view.autoRange()
+            if not self.live_processing:
+                return
+        self.frame_counter +=1
+        self.data = image
+        self.img.setImage(image)
+        # self.img.setRect(QRectF(0, 0, 1920, 1080))
+        self.view.autoRange()
+
+        # if self.frame_counter % 5 == 0:
+        self.updatePlot()
+
+            # selected = self.roi.getArrayRegion(image, self.img)
+            # y_values = selected.mean(axis=0)
+            # x_values = np.arange(len(y_values))
+            # self.profile.setData(y_values, x_values)
+        
 
     def CancelFeed(self):
         self.CameraWorker.stop()
@@ -285,7 +377,7 @@ class Window(QMainWindow, Ui_MainWindow):
             # Launch processing
             # launch_processing(raw_path,
             #                   self.SpatialBox.isChecked(),
-            #                   self.TemporalBox.isChecked(),
+            #                   self.TemporalBox.isChecked(), 
             #                   self.BFI_CheckBox.isEnabled() and self.BFI_CheckBox.isChecked(),
             #                   (self.spatial_window1.value(), self.spatial_window2.value()),
             #                   self.temp_window.value())
@@ -342,13 +434,15 @@ class ProcessMonitor(QThread):
 
 class DisplayProcessed(QThread):
     ImageUpdate = pyqtSignal(np.ndarray)
+    FirstFrame = pyqtSignal(pg.ColorMap, int)
 
-    def __init__(self, signal_queue:multiprocessing.Queue):
+    def __init__(self, signal_queue:multiprocessing.Queue, gradient_bar):
         super().__init__()
         print('DisplayProcessed initialized')
         self.signal_queue = signal_queue
         self.ThreadActive = False
         self.dtype = LIVE_DTYPE
+        self.gradient_bar = gradient_bar
 
         self.processed_shm = shared_memory.SharedMemory(name='processed')
         self.processed_frame = np.ndarray((1920,1080), dtype=self.dtype, buffer=self.processed_shm.buf)
@@ -357,7 +451,13 @@ class DisplayProcessed(QThread):
         self.ThreadActive = True
         while self.ThreadActive:
             # Wait for new frame signal and update frame
-            self.signal_queue.get()
+            signal = self.signal_queue.get()
+            if signal:
+                # If signal is True, we're receiving the first frame
+                self.FirstFrame.emit(pg.colormap.get('magma'), int(self.processed_frame.max()))
+            #     self.gradient_bar.setColorMap(pg.colormap.get('magma'))
+            #     self.gradient_bar.setLevels(low=0, high=self.processed_frame.max())
+
             self.ImageUpdate.emit(self.processed_frame)
             # print('got a frame')
             # print(self.ThreadActive)
@@ -372,6 +472,8 @@ class DisplayProcessed(QThread):
 
 class CameraWorker(QThread):
     ImageUpdate = pyqtSignal(np.ndarray)
+    FirstFrame = pyqtSignal(pg.ColorMap, int)
+    CameraError = pyqtSignal()
 
     def __init__(self, frame_queue, recording:threading.Event, display_raw=True):
         super().__init__()
@@ -379,6 +481,7 @@ class CameraWorker(QThread):
         self.ThreadActive = False
         self.recording = recording
         self.display_raw = display_raw
+        self.max_attempts = 4
 
         if not display_raw:
             self.raw_shm = shared_memory.SharedMemory(create=False, name='spatial')
@@ -396,45 +499,59 @@ class CameraWorker(QThread):
             print('IMPORT ERROR')
             configure_path = None
 
-        with TLCameraSDK() as sdk:
-            available_cameras = sdk.discover_available_cameras()
-            if len(available_cameras) < 1:
-                print("No cameras detected.")
-                self.stop()
+        for _ in range(self.max_attempts):
+            try:
+                with TLCameraSDK() as sdk:
+                    available_cameras = sdk.discover_available_cameras()
+                    if len(available_cameras) < 1:
+                        print("No cameras detected.")
+                        self.stop()
 
-            with sdk.open_camera(available_cameras[0]) as camera:
-                camera.frames_per_trigger_zero_for_unlimited = 0  # start camera in continuous mode
-                camera.exposure_time_us = 10000  # set exposure to 10 ms #TODO this should eventually be a parameter
-                camera.image_poll_timeout_ms = 1000  # 1 second polling timeout
+                    with sdk.open_camera(available_cameras[0]) as camera:
+                        camera.frames_per_trigger_zero_for_unlimited = 0  # start camera in continuous mode
+                        camera.exposure_time_us = 10000  # set exposure to 10 ms #TODO this should eventually be a parameter
+                        camera.image_poll_timeout_ms = 1000  # 1 second polling timeout
 
-                camera.arm(2)
-                camera.issue_software_trigger()
+                        camera.arm(2)
+                        camera.issue_software_trigger()
 
-                while self.ThreadActive:
-                    frame = camera.get_pending_frame_or_null()
-                    if frame is not None:
-                        # print('frame number: ', frame.frame_count)
-                        frame_float32 = np.copy(frame.image_buffer).astype(np.float32)
-                        if self.recording.is_set():
-                            # Currently recording
-                            self.frame_queue.put(frame_float32)
-                        frame_float32 = cv2.transpose(frame_float32)
-                        frame_float32 = cv2.flip(frame_float32, -1)
+                        first_frame = True
+                        while self.ThreadActive:
+                            frame = camera.get_pending_frame_or_null()
+                            if frame is not None:
+                                # print('frame number: ', frame.frame_count)
+                                frame_float32 = np.copy(frame.image_buffer).astype(np.float32)
+                                if self.recording.is_set():
+                                    # Currently recording
+                                    self.frame_queue.put(frame_float32)
+                                frame_float32 = cv2.transpose(frame_float32)
+                                frame_float32 = cv2.flip(frame_float32, -1)
 
-                        frame = ((frame_float32-frame_float32.min())/(frame_float32.max()-frame_float32.min()) * 255).astype(np.uint8)
-                        
-                        # ConvertToQtFormat = QImage(FlippedImage.data, 
-                        #                            FlippedImage.shape[1], 
-                        #                            FlippedImage.shape[0], 
-                        #                            QImage.Format_Grayscale8)
-                        # Pic = ConvertToQtFormat.scaled(1920/2, 1080/2, Qt.KeepAspectRatio)
-                        if self.display_raw:
-                            self.ImageUpdate.emit(frame)
-                        else:
-                            # Live processing is activated
-                            self.raw_frame[:] = frame_float32[:]
-                if not self.display_raw:
-                    self.raw_shm.close()
+                                frame = ((frame_float32-frame_float32.min())/(frame_float32.max()-frame_float32.min()) * 255).astype(np.uint8)
+                                
+                                # ConvertToQtFormat = QImage(FlippedImage.data, 
+                                #                            FlippedImage.shape[1], 
+                                #                            FlippedImage.shape[0], 
+                                #                            QImage.Format_Grayscale8)
+                                # Pic = ConvertToQtFormat.scaled(1920/2, 1080/2, Qt.KeepAspectRatio)
+                                if self.display_raw:
+                                    self.ImageUpdate.emit(frame)
+                                    if first_frame:
+                                        self.FirstFrame.emit(pg.colormap.getFromMatplotlib('gray'), frame.max())
+                                else:
+                                    # Live processing is activated
+                                    self.raw_frame[:] = frame_float32[:]
+
+                                first_frame = False
+                        if not self.display_raw:
+                            self.raw_shm.close()
+                    break
+            except:
+                time.sleep(1) # Wait 1 second before trying again
+
+        else:
+            print('Failed to access camera after multiple attempts.')
+            self.CameraError.emit()
                         
     
     def stop(self):
@@ -514,11 +631,19 @@ def spatial_worker(kernel_size, out_queue:multiprocessing.Queue, stop_event,
 
     processed_shm = shared_memory.SharedMemory(create=False, name=processed_mem)
     processed_frame = np.ndarray((1920,1080), dtype=LIVE_DTYPE, buffer=processed_shm.buf)
-        
+    
+    first_frame = True
+    frame_max = None
     while not stop_event.is_set():
+
         working_copy = raw_frame.copy()
-        processed_frame[:] = spatial_bfi_frame(working_copy, kernel_size)[:]
-        out_queue.put('signal')
+        processed_frame[:] = spatial_bfi_frame(working_copy, kernel_size, frame_max)[:]
+        
+        if first_frame:
+            frame_max = processed_frame.max()
+        
+        out_queue.put(first_frame)
+        first_frame=False
         # print('frame processed and signal sent')
     raw_shm.close()
     processed_shm.close()
@@ -527,7 +652,7 @@ def spatial_worker(kernel_size, out_queue:multiprocessing.Queue, stop_event,
 
 if __name__ == "__main__":
     # create pyqt5 app
-    App = MyApp(sys.argv) #TODO Add wrapper to cleanup live processing workers upon exit
+    App = MyApp(sys.argv) 
 
     # create the instance of our Window
     window = Window()

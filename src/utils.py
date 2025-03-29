@@ -12,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
 # from scipy.ndimage import gaussian_filter1d
-import skvideo
+import skvideo.io
 from tqdm import tqdm
 from scipy.ndimage import convolve, uniform_filter
 
@@ -143,10 +143,14 @@ def spatial_one_frame(frame:np.ndarray, kernel_size):
     # Step 2: Calculate contrast as std/mean (handle division by zero)
     return np.divide(std, mean, out=np.zeros_like(std), where=mean != 0)
 
-def spatial_bfi_frame(frame:np.ndarray, kernel_size):
+def spatial_bfi_frame(frame:np.ndarray, kernel_size, frame_max:"int|None"):
     speckle = spatial_one_frame(frame, kernel_size)
     speckle = np.where(speckle == 0, 1e-5, speckle)
     flowmap = 1/speckle**2
+    # if frame_max:
+    #     return np.clip(flowmap, a_min=0, a_max=frame_max)
+    # else:
+    #     return flowmap
 
     clip_to = np.percentile(flowmap, 95)
     clip_to = np.max(flowmap[flowmap<=clip_to])
