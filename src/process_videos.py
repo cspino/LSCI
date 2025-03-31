@@ -9,7 +9,7 @@ import os
 from typing import List, Tuple, Optional
 
 from utils import temporal_contrast, spatial_contrast, read_video
-from save_utils import save_flowmap, save_speckle
+from save_utils import save_flowmap, save_speckle, save_as_bytes
 
 def main(output_dir:Optional[Path],
          videos:List[Path],
@@ -48,6 +48,7 @@ def main(output_dir:Optional[Path],
                 clip_to = np.max(flowmap[flowmap<=clip_to])
                 flowmap = np.clip(flowmap, 0, clip_to)
 
+                save_as_bytes(flowmap, output_dir/(vid_name+'_temporal_map.raw'))
                 save_flowmap(flowmap, output_dir/(vid_name+'_temporal_map.avi'), frame_rate, show=show)
 
         if spatial:
@@ -64,6 +65,7 @@ def main(output_dir:Optional[Path],
                 clip_to = np.max(flowmap[flowmap<=clip_to])
                 flowmap = np.clip(flowmap, 0, clip_to)
 
+                save_as_bytes(flowmap, output_dir/(vid_name+'_spatial_map.raw'))
                 save_flowmap(flowmap, output_dir/(vid_name+'_spatial_map.avi'), frame_rate, show=show)
 
 if __name__=="__main__":

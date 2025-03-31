@@ -77,12 +77,21 @@ def create_colorbar(height, cmap:str, max_value=255):
     colorbar_img = cv2.resize(colorbar_img, (colorbar_img.shape[1], height))
     return cv2.cvtColor(colorbar_img, cv2.COLOR_RGB2BGR)
 
+def get_matplotlib_LUT(mpl_cmap):
+    lut = mpl_cmap(np.linspace(0,1,256)).astype(np.uint8)
+    print(lut.dtype)
+    return lut[:, :3] # only keep RGB
+
+
 def save_flowmap(stack:np.ndarray, output_path:Path, fps:int, show:bool=False)->None:
     print("Saving relative flow map...")
     print('stack shape: ', stack.shape)
 
     colorbar = create_colorbar(stack.shape[1], "hot", stack.max())
     print(colorbar.shape)
+
+    lut = get_matplotlib_LUT(mpl.cm.plasma)
+    print(lut.shape)
 
     final_frame_size = (int(stack.shape[2]+colorbar.shape[2]), stack.shape[1]) # W, H
     # frame_size, im, ax = get_final_shape(stack[0], stack_max)
@@ -108,6 +117,8 @@ def save_flowmap(stack:np.ndarray, output_path:Path, fps:int, show:bool=False)->
         time2 = time.time()
         # print('Render time: ', time2-time1)
         cmap_frame = cv2.applyColorMap(stack[i], cv2.COLORMAP_HOT)
+        # print("frame shape: ", stack[i].shape)
+        # cmap_frame = cv2.LUT(stack[i], lut)
         frame = np.hstack((cmap_frame, colorbar))
         timeee = time.time()
         # print('Render time: ', time2-timeee)
@@ -159,3 +170,10 @@ def save_speckle(speckle:np.ndarray, file_path:Path, frame_rate:int, show:bool=F
     # Release the VideoWriter
     cv2.destroyWindow('Frame')
     video_writer.release()
+
+
+def save_as_bytes(stack:np.ndarray, output_file:Path):
+    start_time = time.time()
+    with open(output_file, 'wb') as f:
+        f.write(stack.tobytes())
+    print("took ", time.time()-start_time)

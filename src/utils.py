@@ -9,6 +9,7 @@ from typing import Tuple, Optional
 from natsort import natsorted
 # from PIL import Image # TODO replace this
 import numpy as np
+# from numba import jit
 import matplotlib.pyplot as plt
 from matplotlib import animation
 # from scipy.ndimage import gaussian_filter1d
@@ -64,7 +65,7 @@ def calculate_contrast_from_sums(sum_s:np.ndarray, sum_s2:np.ndarray, window:int
     # print('variance: ', var)
     return np.sqrt(var)/np.clip(mean, 1e-15, None)
 
-
+# @jit(nopython=True)
 def temporal_contrast(raw_video:np.ndarray, window_size:int, baseline:np.ndarray=None)->Tuple[np.ndarray, int]:
     """
     Calculate the temporal contrast for a given video
@@ -81,6 +82,7 @@ def temporal_contrast(raw_video:np.ndarray, window_size:int, baseline:np.ndarray
     processed_frames = np.zeros([n_processed_frames, width, height], dtype=np.float32)
 
     for i in tqdm (range(n_processed_frames), desc="Processing"):
+    # for i in range(n_processed_frames):
         frames_window = raw_video[i:i+window_size, :, :]
         # print('frames window max: ', np.max(frames_window))
 
@@ -143,7 +145,7 @@ def spatial_one_frame(frame:np.ndarray, kernel_size):
     # Step 2: Calculate contrast as std/mean (handle division by zero)
     return np.divide(std, mean, out=np.zeros_like(std), where=mean != 0)
 
-def spatial_bfi_frame(frame:np.ndarray, kernel_size, frame_max:"int|None"):
+def spatial_bfi_frame(frame:np.ndarray, kernel_size, frame_max:"int|None"=None):
     speckle = spatial_one_frame(frame, kernel_size)
     speckle = np.where(speckle == 0, 1e-5, speckle)
     flowmap = 1/speckle**2

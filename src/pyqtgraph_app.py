@@ -3,18 +3,18 @@ import os
 import subprocess
 import time
 import skvideo
-from PyQt5.QtWidgets import *
+from PyQt5.QtWidgets import QApplication, QMainWindow, QButtonGroup, QFileDialog, QMessageBox, QTableWidgetItem, QPushButton
 import sys
 
-from utils import spatial_bfi_frame, spatial_one_frame
+from utils import read_video, spatial_bfi_frame
 # from utils import launch_processing
 sys.path.append('..') # this is to be able to import files in project folder
 # from windows_setup import configure_path
 # configure_path()
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtGui import *
-from PyQt5.QtCore import *
+from PyQt5.QtGui import QIcon, QPixmap
+from PyQt5.QtCore import QRectF, QThread, pyqtSignal
 from PyQt5 import QtCore
 # from pyqtgraph import ptime
 
@@ -27,8 +27,7 @@ from app_ui import Ui_MainWindow
 import multiprocessing
 import process_videos
 
-from thorlabs_tsi_sdk.tl_camera import TLCameraSDK, OPERATION_MODE
-from thorlabs_tsi_sdk.tl_camera_enums import DATA_RATE
+from thorlabs_tsi_sdk.tl_camera import TLCameraSDK
 
 LIVE_DTYPE = np.float32
 
@@ -46,7 +45,11 @@ class MyApp(QApplication):
     def cleanup(self):
         if self.main_window.live_processing:
             self.main_window.stop_live_processing.set()
-            print('cleanup done')
+        if self.main_window.processed_mem:
+            self.main_window.processed_mem.close()
+        if self.main_window.spatial_mem:
+            self.main_window.spatial_mem.close()
+        print('cleanup done')
 
 
 # Image View class
@@ -80,6 +83,22 @@ class Window(QMainWindow, Ui_MainWindow):
         self.CameraWorker = None
         self.data = None
         self.frame_counter = 0
+        self.avg_max = 0 # to keep track of the average profile max when recording
+        self.cmap = 'gray' #keep track of current colormap
+
+        # To load a video from raw file
+        self.loaded_vid = None
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.read_from_loaded_vid)
+        self.playback_index = 0
+        self.play_pause_button.clicked.connect(self.togglePlayPause)
+        self.frame_slider.valueChanged.connect(self.goToFrame)
+        self.playback_running = False
+
+        # Slider and play/pause button are kept hidden until we load a file
+        self.play_pause_button.hide()
+        self.frame_slider.hide()
+        self.cmap_button.hide()
 
         # To keep track of processing launched (post)
         self.processes = {} # Stores processes
@@ -89,24 +108,28 @@ class Window(QMainWindow, Ui_MainWindow):
         self.live_processing = False
         self.signal_queue = multiprocessing.Queue()
         self.DisplayProcessed = None # This stores the process responsible for real time processing
+        self.processed_mem = None
+        self.spatial_mem = None
 
     # method for components
     def UiComponents(self):
-        # widget = QWidget()
+        # Apply default config
         # TODO this can be moved to the UI document if we pass the config
         _translate = QtCore.QCoreApplication.translate
         self.output_dir_line_edit.setText(_translate("MainWindow", self.config['output_dir']))
+        self.spatial_window1.setProperty("value", self.config['spatial_window'])
+        self.spatial_window2.setProperty("value", self.config['spatial_window'])
+        self.temp_window.setProperty("value", self.config['temporal_window'])
 
+        self.TemporalBox.setChecked(self.config['temporal'])
+        self.SpatialBox.setChecked(self.config['spatial'])
+        self.BFI_CheckBox.setChecked(self.config['bfi'])
+        self.check_bfi_state()
 
-        # self.StartButton = QPushButton("Start Acquisition")
         self.StartButton.clicked.connect(lambda: self.ToggleAcquisition(False))
+        self.load_button.clicked.connect(lambda: self.LoadFile(self.output_dir))
 
-        # Output directory selection
-        # self.output_dir_line_edit = QLineEdit(self)
-        # self.output_dir_line_edit.setPlaceholderText("Choose output directory")
-
-        # self.browse_button = QPushButton("Browse...")
-        self.browse_button.clicked.connect(self.browse_directory)
+        self.browse_button.clicked.connect(lambda: self.browse_directory(self.output_dir))
 
         self.RecordButton.clicked.connect(self.ToggleRecord)
 
@@ -118,7 +141,8 @@ class Window(QMainWindow, Ui_MainWindow):
         self.spatial_window2.valueChanged.connect(self.sync_spatial_window_boxes)
 
         self.process_table.setColumnWidth(0,25)
-        self.process_table.setColumnWidth(1,150)
+        self.process_table.setColumnWidth(1,117)
+        self.process_table.setColumnWidth(2,3)
 
         # Radio buttons for display
         self.button_group = QButtonGroup(self)
@@ -129,23 +153,6 @@ class Window(QMainWindow, Ui_MainWindow):
         pg.setConfigOptions(antialias=True)
         # self.win = pg.GraphicsLayoutWidget()
         self.win.ci.setContentsMargins(0, 0, 0, 0)
-
-        # self.p1 = self.win.addPlot()
-        # self.img = pg.ImageItem()
-        # self.p1.addItem(self.img)
-        # self.p1.setMouseEnabled(x=False,y=False)
-        # self.p1.setAspectLocked(True)
-
-        # self.p1.hideAxis('left')
-        # self.p1.hideAxis('bottom')
-        # self.p1.hideButtons()
-
-        # self.p1.scale(1.0, 1.0)
-        # self.p1.setLimits(xMin=0, xMax=1920, yMin=0, yMax=1080)
-
-        # self.win.ci.layout.setRowStretchFactor(0,1)
-        # self.win.ci.layout.setRowStretchFactor(1,3)
-
 
         self.profile_plot = self.win.addPlot(row=0,col=1)
         self.profile_plot.setMaximumWidth(100)
@@ -162,13 +169,24 @@ class Window(QMainWindow, Ui_MainWindow):
         # self.img.setPos(-frac*1920, -frac*1080)
         self.view.addItem(self.img)
 
+        # label for plot max and average max 
+        self.profile_max_label = pg.TextItem("ROI Profile max: ", anchor=(0.5,0))
+        self.view.addItem(self.profile_max_label)
+
+        self.profile_max_avg_label = pg.TextItem("average max: ", anchor=(0.5,0))
+        self.view.addItem(self.profile_max_avg_label)
+
+        self.profile_max_label.setPos(1920/3, 0)
+        self.profile_max_avg_label.setPos(1920*2/3, 0)
+
+
         self.gradient_bar = pg.ColorBarItem(interactive=False)
         self.gradient_bar.setImageItem(self.img)
         # self.gradient_bar.setOrientation('horizontal')  # Horizontal bar
         self.win.addItem(self.gradient_bar, row=0, col=3)
 
         # Custom ROI for selecting an image region
-        self.roi = pg.ROI([0, 0], [1920, 1080])
+        self.roi = pg.ROI([0, 0], [1920, 1080], maxBounds=QRectF(0,0,1920,1080))
         self.roi_indices = [0,1920,0,1080]
         self.roi.addScaleHandle([0.5, 1], [0.5, 0.5])
         self.roi.addScaleHandle([0, 0.5], [0.5, 0.5])
@@ -177,7 +195,17 @@ class Window(QMainWindow, Ui_MainWindow):
 
         self.roi.sigRegionChanged.connect(self.updateRoi)
 
+        icon = QIcon()
+        icon.addPixmap(QPixmap("../resources/cmap_button_icon.png"), QIcon.Normal, QIcon.Off)
+        self.cmap_button.setIcon(icon)
+        self.cmap_button.clicked.connect(self.ToggleColorMap)
+
+        self.open_file_icon = QIcon()
+        self.open_file_icon.addPixmap(QPixmap("../resources/open_file_icon.png"), QIcon.Normal, QIcon.Off)
+
+
     def updateRoi(self):
+        self.reset_average()
         pos = self.roi.pos()
         size = self.roi.size()
         self.roi_indices = [int(pos.x()), int(pos.x()+size.x()), int(pos.y()), int(pos.y()+size.y())] #x1, x2, y1, y2
@@ -201,9 +229,20 @@ class Window(QMainWindow, Ui_MainWindow):
         y_values = selected.mean(axis=0)
         x_values = np.arange(len(y_values))
         self.profile.setData(y_values, x_values)
-        self.profile_max.setText("{:.3f}".format(np.max(y_values)))
+        self.profile_max_label.setText("ROI Profile max: {:.3f}".format(np.max(y_values)))
 
-        
+        if self.recording.is_set() or self.playback_running:
+            if self.frame_counter == 0:
+                self.avg_max = float(np.max(y_values))
+            else:
+                self.avg_max = (self.avg_max*(self.frame_counter)+float(np.max(y_values)))/(self.frame_counter+1)
+            self.profile_max_avg_label.setText("average max: {:.3f}".format(self.avg_max))
+            self.frame_counter += 1
+
+    def reset_average(self):
+        self.avg_max = 0
+        self.frame_counter = 0
+
 
     def sync_spatial_window_boxes(self):
         sender = self.sender()  # Get the widget that triggered the signal
@@ -219,18 +258,38 @@ class Window(QMainWindow, Ui_MainWindow):
         else:
             self.BFI_CheckBox.setEnabled(False)
 
-    def browse_directory(self):
+    def browse_directory(self, directory:Path):
         """Open a directory dialog to select an output directory"""
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory", self.output_dir.as_posix())
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory", directory.as_posix())
         if dir_path:
             self.output_dir = Path(dir_path)  # Set the selected directory
             self.output_dir_line_edit.setText(str(self.output_dir))
 
-    def SetColorMap(self, colormap:"pg.ColorMap|str", range_max):
-        if isinstance(colormap, str):
-            colormap = pg.colormap.get(colormap)
+    def SetColorMap(self, cmap_name:str, range_max):
+        if cmap_name == 'gray':
+            colormap = pg.colormap.getFromMatplotlib('gray')
+        elif cmap_name == 'magma':
+            colormap = pg.colormap.get('magma')
+        else:
+            try:
+                colormap = pg.colormap.get(cmap_name)
+            except:
+                print("WARNING: Colormap {colormap} is not valid.")
+                return
+        self.cmap = cmap_name
         self.gradient_bar.setColorMap(colormap)
-        self.gradient_bar.setLevels(low=0, high=range_max)
+        # self.gradient_bar.setLevels(low=0, high=range_max) #TODO this might not be necessary
+
+    def ToggleColorMap(self):
+        if self.cmap == 'gray':
+            colormap = pg.colormap.get('magma')
+            self.cmap = 'magma'
+        else:
+            colormap = pg.colormap.getFromMatplotlib('gray')
+            self.cmap = 'gray'
+
+        self.gradient_bar.setColorMap(colormap)
+
 
     def camera_error(self):
         print("IN ERROR FUNCTION")
@@ -243,23 +302,113 @@ class Window(QMainWindow, Ui_MainWindow):
         msg.setStandardButtons(QMessageBox.Ok)
         msg.exec_()
 
+
+    def LoadFile(self, directory:Path):
+        # Open File Dialog to select file
+        file_filter = "RAW Files (*.raw);;All Files (*.*)"
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select .raw file to open", directory.as_posix(),file_filter)
+        if filepath:
+            self.loaded_vid, self.fps = read_video(Path(filepath))
+
+            if not self.loaded_vid is None:
+                self.playback_index = 0 # reset index
+                self.playback_len = self.loaded_vid.shape[0]
+                self.frame_slider.setMaximum(self.playback_len-1)
+                self.switch_cmap = True
+                self.StartPlayback()
+                self.radio_raw.blockSignals(False)
+                self.radio_spatial.blockSignals(False)
+                # Display start/stop button and slider
+                self.play_pause_button.show()
+                self.frame_slider.show()
+                self.cmap_button.show()
+                self.profile_max_avg_label.setText("average max: ")
+
+
+    def create_shared_mems(self):
+        # If the app crashed, shared memories might not have been cleaned up
+        # so we catch FileExistsErrors
+        n_bytes = np.empty((1920,1080), dtype=LIVE_DTYPE).nbytes
+        if not self.spatial_mem:
+            try:
+                self.spatial_mem = shared_memory.SharedMemory(create=True, name='spatial', size=n_bytes)
+            except FileExistsError:
+                self.spatial_mem = shared_memory.SharedMemory(create=False, name='spatial')
+        if not self.processed_mem:
+            try:
+                self.processed_mem = shared_memory.SharedMemory(create=True, name='processed', size=n_bytes)
+            except FileExistsError:
+                self.processed_mem = shared_memory.SharedMemory(create=False, name='processed')
+
+    def PausePlayback(self):
+        self.playback_running = False
+        self.timer.stop()
+        self.play_pause_button.setText("Play")
+
+    
+    def StartPlayback(self):
+        self.playback_running = True
+        self.play_pause_button.setText("Pause")
+        self.timer.start(1000//self.fps)
+
+    def togglePlayPause(self):
+        if self.playback_running:
+            self.PausePlayback()
+        else:
+            self.StartPlayback()
+
+    def goToFrame(self):
+        self.reset_average()
+        self.playback_index = self.frame_slider.value()
+        self.read_from_loaded_vid()
+
+
+    def read_from_loaded_vid(self):
+        # print("reading frame")
+        if self.playback_index >= self.playback_len-1:
+            # At the end of the vid
+            self.PausePlayback()
+        else:
+            self.playback_index += 1
+
+        frame = self.loaded_vid[self.playback_index-1,:,:]
+        frame = cv2.transpose(frame)
+        frame = cv2.flip(frame, -1)
+        
+        # frame = ((frame-frame.min())/(frame.max()-frame.min()) * 255).astype(np.uint8) #TODO unsure if needed for raw
+        self.ImageUpdateSlot(frame, processed=False)
+        self.update_frame_slider()
+
+
+    def update_frame_slider(self):
+        # We need to block signals when we change the value to avoid a feedback loop
+        self.frame_slider.blockSignals(True)
+        self.frame_slider.setValue(self.playback_index)
+        self.frame_slider.blockSignals(False)
+
     def ToggleAcquisition(self, force_off=False):
-        print(self.StartButton.isChecked())
         print(force_off)
         if self.StartButton.isChecked() and not force_off:
             # Start the acquisition
             print("Starting acquisition...")
             self.StartButton.setText("Stop")
 
+            if self.playback_running:
+                #From a file
+                print("pausing playback here")
+                self.PausePlayback()
+            
+            self.play_pause_button.hide()
+            self.frame_slider.hide()
+            self.cmap_button.hide()
+            self.profile_max_avg_label.setText("average max: ")
+            
             # Disable radio buttons
             for button in self.button_group.buttons():
                 button.setEnabled(False)
 
-            if not self.radio_raw.isChecked():
-                n_bytes = np.empty((1920,1080), dtype=LIVE_DTYPE).nbytes
-                self.spatial_mem = shared_memory.SharedMemory(create=True, name='spatial', size=n_bytes)
-                self.processed_mem = shared_memory.SharedMemory(create=True, name='processed', size=n_bytes)
-                print('mem files created')
+            if self.radio_spatial.isChecked():
+                self.create_shared_mems()
             
             # Start worker to handle video feed
             self.CameraWorker = CameraWorker(self.frame_queue, self.recording, self.radio_raw.isChecked())
@@ -271,25 +420,7 @@ class Window(QMainWindow, Ui_MainWindow):
                 self.CameraWorker.FirstFrame.connect(lambda cmap, r_max: self.SetColorMap(cmap, r_max))
 
             elif self.radio_spatial.isChecked():
-                self.live_processing = True
-                self.stop_live_processing = multiprocessing.Event()
-                # print('kwargs: ', {'kernel_size':self.temp_window.value(), 'out_queue': self.signal_queue, "stop_event": self.stop_live_processing})
-                self.live_process = multiprocessing.Process(target=spatial_worker, args=(self.temp_window.value(),
-                                                                                          self.signal_queue,
-                                                                                          self.stop_live_processing))
-                # self.live_process = SpatialWorker(self.temp_window.value(), self.signal_queue, self.stop_live_processing)
-                self.live_process.start()
-
-                self.DisplayProcessed = DisplayProcessed(self.signal_queue, self.gradient_bar)
-                self.DisplayProcessed.start()
-                self.DisplayProcessed.ImageUpdate.connect(lambda image: self.ImageUpdateSlot(image, processed=True))
-                self.DisplayProcessed.FirstFrame.connect(lambda cmap, r_max: self.SetColorMap(cmap, r_max))
-
-                # Apply a colormap
-                # self.img.setLookupTable(pg.colormap.get('magma').getLookupTable())
-                # self.img.setLevels([data.min(), data.max()])  # Optional: Adjust intensity range
-                # self.gradient_bar.setColorMap(pg.colormap.get('magma'))
-        
+                self.SetupLiveProcessing()
 
             self.RecordButton.setEnabled(True)
 
@@ -312,13 +443,27 @@ class Window(QMainWindow, Ui_MainWindow):
                 self.live_processing = False
                 self.DisplayProcessed.stop()
                 self.stop_live_processing.set()
-                self.processed_mem.close()
-                self.spatial_mem.close()
                 self.DisplayProcessed = None
                 print('2')
 
+    def SetupLiveProcessing(self):
+        self.stop_live_processing = multiprocessing.Event()
+        self.pause_live_processing = multiprocessing.Event()
+        self.live_process = multiprocessing.Process(target=spatial_worker, args=(self.temp_window.value(),
+                                                                                    self.signal_queue,
+                                                                                    self.stop_live_processing))
+        self.live_process.start()
+
+        self.DisplayProcessed = DisplayProcessed(self.signal_queue)
+        self.DisplayProcessed.start()
+        self.DisplayProcessed.ImageUpdate.connect(lambda image: self.ImageUpdateSlot(image, processed=True))
+        self.DisplayProcessed.FirstFrame.connect(lambda cmap, r_max: self.SetColorMap(cmap, r_max))
+        self.live_processing = True
+    
+
     def ToggleRecord(self):
         if  self.RecordButton.isChecked():
+            # Start Saving
             self.RecordButton.setText("Stop Record")
             # self.RecordButton.setChecked(True)
             self.StartButton.setEnabled(False)
@@ -330,13 +475,14 @@ class Window(QMainWindow, Ui_MainWindow):
             self.save_thread.start()
 
         else:
-            # Stop saving
+            # Stop Saving
             self.RecordButton.setText("Start Record")
             # self.RecordButton.setChecked(False)
             
             self.save_thread.requestInterruption()
             self.recording.clear()
             self.StartButton.setEnabled(True)
+            self.reset_average()
 
 
     def ImageUpdateSlot(self, image, processed=False):
@@ -347,23 +493,13 @@ class Window(QMainWindow, Ui_MainWindow):
         if processed:
             if not self.live_processing:
                 return
-        self.frame_counter +=1
         self.data = image
-        self.img.setImage(image)
-        # self.img.setRect(QRectF(0, 0, 1920, 1080))
+        self.img.setImage(image, autoLevels=True)
+        self.gradient_bar.setLevels(self.img.quickMinMax())
         self.view.autoRange()
 
-        # if self.frame_counter % 5 == 0:
         self.updatePlot()
 
-            # selected = self.roi.getArrayRegion(image, self.img)
-            # y_values = selected.mean(axis=0)
-            # x_values = np.arange(len(y_values))
-            # self.profile.setData(y_values, x_values)
-        
-
-    def CancelFeed(self):
-        self.CameraWorker.stop()
 
     def save_raw_as_vid(self, raw_path):
         print("Saving finished, starting another thread...")
@@ -402,17 +538,21 @@ class Window(QMainWindow, Ui_MainWindow):
             self.process_table.setItem(row, 1, QTableWidgetItem("Processing..."))
 
             monitor_thread = ProcessMonitor(process_id, process)
-            monitor_thread.finished_signal.connect(lambda pid=process_id: self.update_thread_status(pid))
+            monitor_thread.finished_signal.connect(lambda pid= process_id, out=self.output_dir : self.update_thread_status(pid, out))
             monitor_thread.start()
             self.monitor_threads[process_id] = monitor_thread
 
 
-    def update_thread_status(self, process_id):
-        print("HERE")
+    def update_thread_status(self, process_id, directory:Path):
+        open_button = QPushButton('')
+        open_button.clicked.connect(lambda: self.LoadFile(directory))
+        open_button.setIcon(self.open_file_icon)
+
         for row in range(self.process_table.rowCount()):
             item = self.process_table.item(row, 0)
             if item and int(item.text()) == process_id:
                 self.process_table.setItem(row, 1, QTableWidgetItem("Finished!"))
+                self.process_table.setCellWidget(row, 2, open_button)
                 break
 
 
@@ -434,15 +574,14 @@ class ProcessMonitor(QThread):
 
 class DisplayProcessed(QThread):
     ImageUpdate = pyqtSignal(np.ndarray)
-    FirstFrame = pyqtSignal(pg.ColorMap, int)
+    FirstFrame = pyqtSignal(str, int)
 
-    def __init__(self, signal_queue:multiprocessing.Queue, gradient_bar):
+    def __init__(self, signal_queue:multiprocessing.Queue):
         super().__init__()
         print('DisplayProcessed initialized')
         self.signal_queue = signal_queue
         self.ThreadActive = False
         self.dtype = LIVE_DTYPE
-        self.gradient_bar = gradient_bar
 
         self.processed_shm = shared_memory.SharedMemory(name='processed')
         self.processed_frame = np.ndarray((1920,1080), dtype=self.dtype, buffer=self.processed_shm.buf)
@@ -454,25 +593,21 @@ class DisplayProcessed(QThread):
             signal = self.signal_queue.get()
             if signal:
                 # If signal is True, we're receiving the first frame
-                self.FirstFrame.emit(pg.colormap.get('magma'), int(self.processed_frame.max()))
-            #     self.gradient_bar.setColorMap(pg.colormap.get('magma'))
-            #     self.gradient_bar.setLevels(low=0, high=self.processed_frame.max())
-
+                self.FirstFrame.emit('magma', int(self.processed_frame.max()))
+            
             self.ImageUpdate.emit(self.processed_frame)
-            # print('got a frame')
-            # print(self.ThreadActive)
+
         print('out of while in DisplayProcessed')
         self.processed_shm.close()
 
     def stop(self):
         self.ThreadActive = False
         print('4')
-        # self.quit()
 
 
 class CameraWorker(QThread):
     ImageUpdate = pyqtSignal(np.ndarray)
-    FirstFrame = pyqtSignal(pg.ColorMap, int)
+    FirstFrame = pyqtSignal(str, int)
     CameraError = pyqtSignal()
 
     def __init__(self, frame_queue, recording:threading.Event, display_raw=True):
@@ -529,15 +664,10 @@ class CameraWorker(QThread):
 
                                 frame = ((frame_float32-frame_float32.min())/(frame_float32.max()-frame_float32.min()) * 255).astype(np.uint8)
                                 
-                                # ConvertToQtFormat = QImage(FlippedImage.data, 
-                                #                            FlippedImage.shape[1], 
-                                #                            FlippedImage.shape[0], 
-                                #                            QImage.Format_Grayscale8)
-                                # Pic = ConvertToQtFormat.scaled(1920/2, 1080/2, Qt.KeepAspectRatio)
                                 if self.display_raw:
                                     self.ImageUpdate.emit(frame)
                                     if first_frame:
-                                        self.FirstFrame.emit(pg.colormap.getFromMatplotlib('gray'), frame.max())
+                                        self.FirstFrame.emit('gray', frame.max())
                                 else:
                                     # Live processing is activated
                                     self.raw_frame[:] = frame_float32[:]
@@ -552,7 +682,7 @@ class CameraWorker(QThread):
         else:
             print('Failed to access camera after multiple attempts.')
             self.CameraError.emit()
-                        
+
     
     def stop(self):
         self.ThreadActive = False
@@ -633,18 +763,14 @@ def spatial_worker(kernel_size, out_queue:multiprocessing.Queue, stop_event,
     processed_frame = np.ndarray((1920,1080), dtype=LIVE_DTYPE, buffer=processed_shm.buf)
     
     first_frame = True
-    frame_max = None
     while not stop_event.is_set():
 
         working_copy = raw_frame.copy()
-        processed_frame[:] = spatial_bfi_frame(working_copy, kernel_size, frame_max)[:]
-        
-        if first_frame:
-            frame_max = processed_frame.max()
+        processed_frame[:] = spatial_bfi_frame(working_copy, kernel_size)[:]
         
         out_queue.put(first_frame)
         first_frame=False
-        # print('frame processed and signal sent')
+
     raw_shm.close()
     processed_shm.close()
     print('3')
