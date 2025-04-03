@@ -177,7 +177,7 @@ def read_folder_of_frames(folder_path: Path) -> np.ndarray:
     return stacked_images
 
 
-def plot_and_save_profile(vid1:np.ndarray,
+def plot_and_save_profiles(vid1:np.ndarray,
                           label1:str,
                           vid2:np.ndarray,
                           label2:str,
@@ -214,6 +214,28 @@ def plot_and_save_profile(vid1:np.ndarray,
                 # plt.plot(gaussian_filter1d(middle_line_values2[i], sigma=6), color='red', label=label2)
 
             plt.legend(loc='upper right')
+            writer.grab_frame()
+
+
+def plot_and_save_profile(vid1:np.ndarray,
+                          label1:str,
+                          fps:int,
+                          out_path:Path):
+    # Setup
+    writer = animation.writers['ffmpeg']
+    writer = writer(fps=fps)
+    print("VID SHAPE: ", vid1.shape)
+    middle_line_values = np.mean(vid1, axis=2)
+    print("MIDDLE LINE SHAPE: ", middle_line_values.shape)
+    nb_frames = vid1.shape[0]
+
+    # Create a plot for the middle vertical line pixel profile
+    fig = plt.figure(dpi=600, figsize=(16,10))
+    with writer.saving(fig, out_path.as_posix(), nb_frames):
+        for i in range(nb_frames):
+            fig.clear()
+            plt.ylim(0, middle_line_values.max())
+            plt.plot(middle_line_values[i], color='blue', label=label1)
             writer.grab_frame()
 
 

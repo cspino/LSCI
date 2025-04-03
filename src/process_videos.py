@@ -8,7 +8,7 @@ from pathlib import Path
 import os
 from typing import List, Tuple, Optional
 
-from utils import temporal_contrast, spatial_contrast, read_video
+from utils import temporal_contrast, spatial_contrast, read_video, plot_and_save_profile
 from save_utils import save_flowmap, save_speckle, save_as_bytes
 
 def main(output_dir:Optional[Path],
@@ -49,6 +49,7 @@ def main(output_dir:Optional[Path],
                 flowmap = np.clip(flowmap, 0, clip_to)
 
                 save_as_bytes(flowmap, output_dir/(vid_name+'_temporal_map.raw'))
+                plot_and_save_profile(flowmap, 'temporal', frame_rate, output_dir/(vid_name+'_temporal_profile.mp4'))
                 save_flowmap(flowmap, output_dir/(vid_name+'_temporal_map.avi'), frame_rate, show=show)
 
         if spatial:
@@ -66,6 +67,7 @@ def main(output_dir:Optional[Path],
                 flowmap = np.clip(flowmap, 0, clip_to)
 
                 save_as_bytes(flowmap, output_dir/(vid_name+'_spatial_map.raw'))
+                plot_and_save_profile(flowmap, 'spatial', frame_rate, output_dir/(vid_name+'_spatial_profile.mp4'))
                 save_flowmap(flowmap, output_dir/(vid_name+'_spatial_map.avi'), frame_rate, show=show)
 
 if __name__=="__main__":
