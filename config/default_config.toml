@@ -1,9 +1,13 @@
 
-output_dir = "C:/Catherine_dev/Projet4/data/interface_tests"
+output_dir = "../data"
 
 spatial_window = 5 # 5x5
 temporal_window = 10
 
 spatial = false
 temporal = false
-bfi = true
+profile_plots = false
+
+width = 1920
+height = 1080
+fps = 30
