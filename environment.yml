@@ -1,0 +1,16 @@
+name: LSCI
+channels:
+  - defaults
+dependencies:
+  - python=3.8
+  - conda-forge::scikit-video
+  - opencv=4.0.1
+  - pyqtgraph
+  - pyqt=5
+  - tqdm
+  - pathlib
+  - natsort
+  - toml
+  - matplotlib
+  - pyopengl
+  - conda-forge::ffmpeg

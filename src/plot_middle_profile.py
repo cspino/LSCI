@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import numpy as np
-from utils import plot_and_save_profile
+from utils.utils import plot_and_save_profile
 import cv2
 from typing import Tuple
 
@@ -26,10 +26,11 @@ def read_video(video_path:Path)->Tuple[np.ndarray, int]:
 if __name__ == "__main__":
     parser = ArgumentParser(
     formatter_class = ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-v', '--video_one',
-                        required= True,
+    parser.add_argument('-v', '--videos',
+                        required = True,
                         type = Path,
-                        help = 'Path to video')
+                        nargs = '+',
+                        help = 'Paths to videos')
     parser.add_argument('-l1', '--label_one',
                         default = None,
                         type = str,
@@ -69,6 +70,3 @@ if __name__ == "__main__":
     
     # Plot middle profile
     plot_and_save_profile(frames1, label1, frames2, label2, min(fps1, fps2), args.out)
-
-
-
