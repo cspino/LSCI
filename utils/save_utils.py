@@ -33,13 +33,13 @@ def plot_and_save_profiles(videos: List[np.ndarray], labels: List[str], fps: int
     x_averages = [np.mean(video, axis=2) for video in videos]  # Calculate for all videos
 
     nb_frames = max(video.shape[0] for video in videos)  # Max number of frames across videos
-    range_max = max(video.max() for video in videos) # Max value across videos
+    range_max = max(x_average.max() for x_average in x_averages) # Max value across videos
 
     # Create a plot for the middle vertical line pixel profile
     fig = plt.figure(dpi=600, figsize=(16,10))
 
     with writer.saving(fig, out_path.as_posix(), nb_frames):
-        for i in range(nb_frames):
+        for i in tqdm(range(nb_frames), desc="Creating profile plot"):
             fig.clear()
             plt.ylim(0, range_max)
             
