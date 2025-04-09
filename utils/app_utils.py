@@ -37,7 +37,7 @@ class InteractiveColorBar(pg.ColorBarItem):
 
                 if action == set_window:
                     clip_to = np.percentile(self.main_window.data, 95)
-                    self.main_window.gradient_bar.setLevels((0, clip_to))
+                    self.main_window.colorbar.setLevels((0, clip_to))
                     self.main_window.auto_window_level = False
                 elif action == auto_window:
                     self.main_window.auto_window_level = not self.main_window.auto_window_level

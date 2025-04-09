@@ -54,7 +54,7 @@ def spatial_main(output_dir:Optional[Path],
                 flowmap = spatial_bfi(video, spatial_window)
 
                 if not clip_to:
-                    clip_to = np.percentile(flowmap, 99.99)
+                    clip_to = np.percentile(flowmap, 99.9)
                     clip_to = np.max(flowmap[flowmap<=clip_to])
                 flowmap = np.clip(flowmap, 0, clip_to)
 
@@ -109,7 +109,7 @@ def temporal_main(output_dir:Optional[Path],
 
                 # Use the same window level for every batch to avoid jumps
                 if not clip_to:
-                    clip_to = np.percentile(flowmap, 99.99)
+                    clip_to = np.percentile(flowmap, 99.9)
                     clip_to = np.max(flowmap[flowmap<=clip_to])
                 flowmap = np.clip(flowmap, 0, clip_to)
 
@@ -120,7 +120,7 @@ def temporal_main(output_dir:Optional[Path],
                 else:
                     norm_max = flowmap.max()
         
-        save_as_avi(output_path, norm_max)
+        save_as_avi(output_path, norm_max, BYTES_PER_FRAME, batch_size=BATCH_SIZE)
         if profile:
             plot_profile_from_path(output_path, "Temporal", output_dir/(vid_name+'_temporal_profile.mp4'))
 

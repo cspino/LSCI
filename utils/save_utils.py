@@ -2,7 +2,6 @@
 Utils for LSCI video saving
 """
 from pathlib import Path
-import time
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation

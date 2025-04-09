@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Tuple, Optional
 from natsort import natsorted
 import numpy as np
-import skvideo.io
 from tqdm import tqdm
 from scipy.ndimage import uniform_filter
 
@@ -303,7 +302,6 @@ def read_video(vid_path:Path,
     Compatible formats include:
     - A folder of jpgs or pngs
     - .raw
-    - .avi
 
     Parameters
     ------------
@@ -334,18 +332,8 @@ def read_video(vid_path:Path,
         data = np.fromfile(vid_path, dtype=np.float32)
         num_frames = data.size // (width*height)
         video = data.reshape((num_frames, height, width))
-
+    
     else:
-        try:
-            # Get info on video
-            cap = cv2.VideoCapture(vid_path.as_posix())
-            frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
-            cap.release()
-
-            video = skvideo.io.vread(vid_path.as_posix())[:,:,:,1]
-        
-        except Exception as e:
-            print("Couldn't read video: ", vid_path, 'error: ', e)
-            return None, None
+        return None, None
     
     return video, frame_rate
